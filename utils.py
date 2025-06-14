@@ -1,6 +1,7 @@
 import logging
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import Bot
+
 
 user_last_bot_message = {}
 
@@ -26,3 +27,15 @@ async def edit_or_send(
             user_last_bot_message[user_id] = msg.message_id
     except Exception as e:
         logging.warning(f"⚠️ Не удалось отредактировать сообщение: {e}")
+
+
+async def send_main_menu(user_id: int, chat_id: int, bot: Bot):
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔘 Добавить", callback_data="add")],
+            [InlineKeyboardButton(text="❌ Удалить", callback_data="delete")],
+            [InlineKeyboardButton(text="📄 Получить отчёт", callback_data="report")],
+        ]
+    )
+    msg = await bot.send_message(chat_id, "Выберите действие:", reply_markup=kb)
+    user_last_bot_message[user_id] = msg.message_id

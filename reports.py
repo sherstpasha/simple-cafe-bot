@@ -1,3 +1,5 @@
+# reports.py
+
 import pandas as pd
 from db import get_connection
 
@@ -13,8 +15,12 @@ def generate_reports():
     )
     conn.close()
 
+    # Пути к файлам
+    report_path = "report.xlsx"
+    log_path = "log_report.xlsx"
+
     # Основной отчет
-    with pd.ExcelWriter("report.xlsx", engine="openpyxl") as writer:
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
         orders_df.to_excel(writer, sheet_name="Все заказы", index=False)
         orders_df[orders_df.payment_type == "Наличный"].to_excel(
             writer, sheet_name="Наличные заказы", index=False
@@ -26,5 +32,7 @@ def generate_reports():
         grouped.to_excel(writer, sheet_name="Группировка по названию", index=False)
 
     # Журнал действий
-    with pd.ExcelWriter("log_report.xlsx", engine="openpyxl") as writer:
+    with pd.ExcelWriter(log_path, engine="openpyxl") as writer:
         actions_df.to_excel(writer, sheet_name="Журнал действий", index=False)
+
+    return report_path, log_path
