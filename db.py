@@ -116,3 +116,56 @@ def get_user_orders(user_id):
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_user_orders(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, date, payment_type, item_name FROM orders WHERE user_id = ? ORDER BY date DESC",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "date": r[1], "payment_type": r[2], "item_name": r[3]}
+        for r in rows
+    ]
+
+
+def delete_order(order_id, user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT payment_type, item_name FROM orders WHERE id = ? AND user_id = ?",
+        (order_id, user_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+    cursor.execute(
+        "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return {"payment_type": row[0], "item_name": row[1]}
+
+
+def delete_orders_today(user_id):
+    from datetime import date
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    today = date.today().isoformat()
+    cursor.execute(
+        "SELECT payment_type, item_name FROM orders WHERE user_id = ? AND date(date) = ?",
+        (user_id, today),
+    )
+    rows = cursor.fetchall()
+    cursor.execute(
+        "DELETE FROM orders WHERE user_id = ? AND date(date) = ?", (user_id, today)
+    )
+    conn.commit()
+    conn.close()
+    return len(rows), [{"payment_type": r[0], "item_name": r[1]} for r in rows]
