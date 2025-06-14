@@ -19,9 +19,9 @@ dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(menu.router)
 dp.include_router(voice_input.router)
 dp.include_router(add.router)
-dp.include_router(misc.router)
 dp.include_router(delete.router)
 dp.include_router(report.router)
+dp.include_router(misc.router)
 
 
 async def main():

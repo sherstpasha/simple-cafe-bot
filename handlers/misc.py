@@ -6,7 +6,7 @@ router = Router()
 
 
 @router.message()
-async def delete_all_except_voice(message: Message):
+async def delete_all(message: Message):
     try:
         await message.delete()
     except Exception as e:
