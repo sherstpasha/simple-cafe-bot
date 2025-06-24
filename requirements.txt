@@ -4,3 +4,6 @@ pandas
 openpyxl
 SpeechRecognition
 pydub
+mistralai
+rapidfuzz
+nltk

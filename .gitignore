@@ -54,3 +54,7 @@ orders.db
 
 # Windows
 Thumbs.db
+
+
+# Json
+*.json
