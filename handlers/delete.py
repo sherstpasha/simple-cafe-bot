@@ -5,7 +5,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from db import get_user_orders, delete_order, log_action, delete_orders_today
-from utils import send_main_menu
+from keyboards import show_main_menu
+from keyboards import confirm_keyboard
 
 router = Router()
 
@@ -43,7 +44,7 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
 
     if not page:
         await call.message.edit_text("🔸 У вас пока нет заказов.")
-        await send_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+        await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
         return
 
     text_lines = []
@@ -125,21 +126,13 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
         f"❌ Запись от: {formatted}, {order['payment_type']}, {order['item_name']} удалена."
     )
 
-    # Показываем главное меню отдельно
-    await send_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+    await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
 # Очистка за сегодня
 @router.callback_query(F.data == "clear_today")
 async def confirm_clear_today(call: CallbackQuery):
-    markup = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Очистить", callback_data="confirm_clear"),
-                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_delete"),
-            ]
-        ]
-    )
+    markup = confirm_keyboard("✅ Очистить", "confirm_clear", "cancel_delete")
     await call.message.edit_text(
         "🔸 Очистить все записи за сегодня?", reply_markup=markup
     )
@@ -160,7 +153,7 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         f"✅ Очищено {count} записи(ей) за {datetime.now().date()}"
     )
-    await send_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+    await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
 # Отмена
@@ -168,4 +161,4 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
 async def cancel_delete(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.delete()
-    await send_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+    await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)

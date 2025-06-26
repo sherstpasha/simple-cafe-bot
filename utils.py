@@ -1,9 +1,22 @@
+import os
 import logging
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup
 from aiogram import Bot
 
+import speech_recognition as sr
+from pydub import AudioSegment
 
+from config import FFMPEG_PATH
+
+# Глобальный словарь для хранения последних сообщений
 user_last_bot_message = {}
+
+# Настройка путей к ffmpeg
+os.environ["PATH"] += os.pathsep + FFMPEG_PATH
+AudioSegment.converter = os.path.join(FFMPEG_PATH, "ffmpeg.exe")
+AudioSegment.ffprobe = os.path.join(FFMPEG_PATH, "ffprobe.exe")
+
+logger = logging.getLogger(__name__)
 
 
 async def edit_or_send(
@@ -29,13 +42,36 @@ async def edit_or_send(
         logging.warning(f"⚠️ Не удалось отредактировать сообщение: {e}")
 
 
-async def send_main_menu(user_id: int, chat_id: int, bot: Bot):
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔘 Добавить", callback_data="add")],
-            [InlineKeyboardButton(text="❌ Удалить", callback_data="delete")],
-            [InlineKeyboardButton(text="📄 Получить отчёт", callback_data="report")],
-        ]
-    )
-    msg = await bot.send_message(chat_id, "Выберите действие:", reply_markup=kb)
-    user_last_bot_message[user_id] = msg.message_id
+async def transcribe_voice(bot: Bot, message) -> str | None:
+    """
+    Преобразует голосовое сообщение в текст.
+    Возвращает строку текста или None при неудаче.
+    """
+    try:
+        voice = await bot.download(message.voice.file_id)
+        ogg_path = f"voice_{message.message_id}.ogg"
+        wav_path = f"voice_{message.message_id}.wav"
+        with open(ogg_path, "wb") as f:
+            f.write(voice.read())
+
+        audio = AudioSegment.from_file(ogg_path)
+        audio.export(wav_path, format="wav")
+
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as src:
+            audio_data = recognizer.record(src)
+            text = recognizer.recognize_google(audio_data, language="ru-RU")
+        return text
+
+    except sr.UnknownValueError:
+        logger.warning("Не удалось распознать речь")
+        return None
+    except Exception as e:
+        logger.exception("Ошибка при распознавании голоса")
+        return None
+    finally:
+        for path in (ogg_path, wav_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass

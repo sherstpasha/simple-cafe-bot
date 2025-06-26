@@ -1,3 +1,5 @@
+# handlers/report.py
+
 from aiogram import Router, F
 from aiogram.types import (
     CallbackQuery,
@@ -7,7 +9,9 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from reports import generate_reports
-from utils import send_main_menu, user_last_bot_message
+from utils import user_last_bot_message
+from keyboards import show_main_menu
+
 
 from datetime import datetime, timedelta
 
@@ -64,10 +68,10 @@ async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
     await call.message.answer_document(document=FSInputFile(report_path))
     await call.message.answer_document(document=FSInputFile(log_path))
 
-    await send_main_menu(call.from_user.id, call.message.chat.id, bot)
+    await show_main_menu(call.from_user.id, call.message.chat.id, bot)
 
 
 @router.callback_query(F.data == "cancel_report")
 async def cancel_report(call: CallbackQuery, state: FSMContext, bot):
     await state.clear()
-    await send_main_menu(call.from_user.id, call.message.chat.id, bot)
+    await show_main_menu(call.from_user.id, call.message.chat.id, bot)
