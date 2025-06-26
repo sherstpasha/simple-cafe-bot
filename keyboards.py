@@ -1,16 +1,12 @@
 # keyboards.py
-
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from utils import user_last_bot_message
+from utils import send_and_track
 
 
 def confirm_keyboard(
     confirm_text: str, confirm_cb: str, cancel_cb: str
 ) -> InlineKeyboardMarkup:
-    """
-    Создаёт клавиатуру подтверждения с кнопками "✅" и "❌".
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=confirm_text, callback_data=confirm_cb)],
@@ -19,12 +15,15 @@ def confirm_keyboard(
     )
 
 
-async def show_main_menu(user_id: int, chat_id: int, bot: Bot):
-    kb = InlineKeyboardMarkup(
+def get_main_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="❌ Удалить", callback_data="delete")],
             [InlineKeyboardButton(text="📄 Получить отчёт", callback_data="report")],
         ]
     )
-    msg = await bot.send_message(chat_id, "Выберите действие:", reply_markup=kb)
-    user_last_bot_message[user_id] = msg.message_id
+
+
+async def show_main_menu(user_id: int, chat_id: int, bot: Bot):
+    kb = get_main_menu()
+    await send_and_track(bot, user_id, chat_id, "Выберите действие:", reply_markup=kb)

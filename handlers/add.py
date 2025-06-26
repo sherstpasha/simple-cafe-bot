@@ -8,15 +8,13 @@ from aiogram import Router, F
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
 )
 from aiogram.fsm.context import FSMContext
 
 from mistralai import Mistral
 from config import MENU_FILE, MISTRAL_API_KEY, MISTRAL_MODEL
 from db import add_order
-from utils import edit_or_send, transcribe_voice
+from utils import edit_or_send, transcribe_voice, notify_temp, send_and_track
 from keyboards import show_main_menu, confirm_keyboard
 
 
@@ -47,8 +45,8 @@ async def handle_message(message: Message, state: FSMContext, bot):
         if message.voice:
             user_text = await transcribe_voice(bot, message)
             if not user_text:
-                await bot.send_message(
-                    chat_id, "🗣 Не удалось распознать речь, попробуйте ещё раз."
+                await notify_temp(
+                    message, "🗣 Не удалось распознать речь, попробуйте ещё раз."
                 )
                 return
         else:
@@ -127,7 +125,9 @@ async def handle_message(message: Message, state: FSMContext, bot):
 
     except Exception as e:
         logger.exception("Ошибка при обработке сообщения")
-        await message.answer("⚠️ Не удалось обработать сообщение. Попробуйте ещё раз.")
+        await notify_temp(
+            message, "⚠️ Не удалось обработать сообщение. Попробуйте ещё раз."
+        )
 
 
 # ——————— Подтверждение добавления ———————
@@ -145,14 +145,16 @@ async def confirm_add(call: CallbackQuery, state: FSMContext):
     )
 
     try:
-        await call.message.edit_text(
-            f"✅ Заказ от {now} добавлен:\n{data['item_name']} — {data['payment_type']}"
-        )
+        await call.message.delete()
     except Exception:
-        try:
-            await call.message.delete()
-        except:
-            pass
+        pass
+
+    await send_and_track(
+        bot=call.bot,
+        user_id=call.from_user.id,
+        chat_id=call.message.chat.id,
+        text=f"✅ Заказ от {now} добавлен:\n{data['item_name']} — {data['payment_type']}",
+    )
 
     await state.clear()
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)

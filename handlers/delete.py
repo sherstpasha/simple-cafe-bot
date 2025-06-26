@@ -5,8 +5,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from db import get_user_orders, delete_order, log_action, delete_orders_today
-from keyboards import show_main_menu
-from keyboards import confirm_keyboard
+from keyboards import show_main_menu, confirm_keyboard
+from utils import send_and_track
+
 
 router = Router()
 
@@ -114,19 +115,27 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
         username=call.from_user.username or "",
     )
 
-    # Форматируем дату
+    # Удаляем старое сообщение с кнопками (если ещё висит)
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+    # Отправляем подтверждение
+    from utils import send_and_track
+
     try:
         dt = datetime.fromisoformat(order["date"])
         formatted = dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         formatted = order["date"]
 
-    # Сообщение об удалении (ОСТАЕТСЯ)
-    await call.message.edit_text(
-        f"❌ Запись от: {formatted}, {order['payment_type']}, {order['item_name']} удалена."
+    await send_and_track(
+        bot=call.bot,
+        user_id=call.from_user.id,
+        chat_id=call.message.chat.id,
+        text=f"❌ Запись от: {formatted}, {order['payment_type']}, {order['item_name']} удалена.",
     )
-
-    await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
 # Очистка за сегодня
@@ -149,10 +158,24 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
             call.from_user.id,
             call.from_user.username or "",
         )
+
     await state.clear()
-    await call.message.edit_text(
-        f"✅ Очищено {count} записи(ей) за {datetime.now().date()}"
+
+    # Удалить предыдущее сообщение с кнопками
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+    # Отправить подтверждение
+    await send_and_track(
+        bot=call.bot,
+        user_id=call.from_user.id,
+        chat_id=call.message.chat.id,
+        text=f"✅ Очищено {count} записи(ей) за {datetime.now().date()}",
     )
+
+    # Показать главное меню
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 

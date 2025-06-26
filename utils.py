@@ -2,11 +2,15 @@ import os
 import logging
 from aiogram.types import InlineKeyboardMarkup
 from aiogram import Bot
+from aiogram.types import Message
 
 import speech_recognition as sr
 from pydub import AudioSegment
 
+import asyncio
+
 from config import FFMPEG_PATH
+
 
 # Глобальный словарь для хранения последних сообщений
 user_last_bot_message = {}
@@ -75,3 +79,23 @@ async def transcribe_voice(bot: Bot, message) -> str | None:
                 os.remove(path)
             except OSError:
                 pass
+
+
+async def send_and_track(
+    bot: Bot, user_id: int, chat_id: int, text: str, **kwargs
+) -> Message:
+    """
+    Отправляет сообщение и обновляет словарь user_last_bot_message.
+    """
+    msg = await bot.send_message(chat_id, text, **kwargs)
+    user_last_bot_message[user_id] = msg.message_id
+    return msg
+
+
+async def notify_temp(message, text: str, delay: int = 4):
+    msg = await message.answer(text, disable_notification=True)
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except:
+        pass
