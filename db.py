@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS order_items (
 );
 """
 
+CREATE_USERS = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id    INTEGER PRIMARY KEY,
+    username   TEXT,
+    role       TEXT DEFAULT 'Отдыхаю'
+);
+"""
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -50,7 +58,8 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute(CREATE_ORDERS)
     cursor.execute(CREATE_LOG)
-    cursor.execute(CREATE_ORDER_ITEMS)  # <-- добавлено
+    cursor.execute(CREATE_ORDER_ITEMS)
+    cursor.execute(CREATE_USERS)
     conn.commit()
     conn.close()
 
@@ -128,25 +137,6 @@ def get_user_orders(user_id):
         {"id": r[0], "date": r[1], "payment_type": r[2], "item_name": r[3]}
         for r in rows
     ]
-
-
-def delete_order(order_id, user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT payment_type, item_name FROM orders WHERE id = ? AND user_id = ?",
-        (order_id, user_id),
-    )
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return None
-    cursor.execute(
-        "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
-    )
-    conn.commit()
-    conn.close()
-    return {"payment_type": row[0], "item_name": row[1]}
 
 
 def delete_orders_today(user_id):
@@ -312,3 +302,28 @@ def delete_entire_order(order_id: int, user_id: int, username: str) -> list[dict
             username=username,
         )
     return items
+
+
+def get_user_role(user_id: int) -> str:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row["role"] if row else "Отдыхаю"
+
+
+def set_user_role(user_id: int, username: str, role: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    # вставка или обновление
+    cur.execute(
+        """
+        INSERT INTO users (user_id, username, role)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, role=excluded.role
+    """,
+        (user_id, username, role),
+    )
+    conn.commit()
+    conn.close()

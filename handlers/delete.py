@@ -6,9 +6,9 @@ from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from db import (
     get_user_orders_with_items,
-    delete_orders_today,
     delete_entire_order,
     log_action,
+    get_user_role,
 )
 from keyboards import show_main_menu, confirm_keyboard
 from utils import send_and_track, notify_temp
@@ -22,6 +22,8 @@ ORDERS_PER_PAGE = 5
 # Показать список заказов
 @router.callback_query(F.data == "delete")
 async def show_orders(call: CallbackQuery, state: FSMContext):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await state.clear()
     await state.update_data(offset=0)
     await display_orders(call, state, offset=0)
@@ -30,6 +32,8 @@ async def show_orders(call: CallbackQuery, state: FSMContext):
 # Кнопка "⏭ Далее"
 @router.callback_query(F.data == "next_page")
 async def next_page(call: CallbackQuery, state: FSMContext):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     data = await state.get_data()
     offset = data.get("offset", 0) + ORDERS_PER_PAGE
     await state.update_data(offset=offset)
@@ -39,6 +43,8 @@ async def next_page(call: CallbackQuery, state: FSMContext):
 # Кнопка "🔙 В начало"
 @router.callback_query(F.data == "reset_page")
 async def reset_page(call: CallbackQuery, state: FSMContext):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await state.update_data(offset=0)
     await display_orders(call, state, offset=0)
 
@@ -105,6 +111,8 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
     Удаляет сразу весь заказ (orders + все его order_items),
     и показывает пользователю итоговый список позиций и сумму.
     """
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     order_id = int(call.data.split("_", 1)[1])
     username = call.from_user.username or ""
 
@@ -140,6 +148,8 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
 # Очистка за сегодня
 @router.callback_query(F.data == "clear_today")
 async def confirm_clear_today(call: CallbackQuery):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await call.answer()  # ACK
     kb = confirm_keyboard("✅ Очистить", "confirm_clear", "cancel_delete")
     await call.message.edit_text(
@@ -149,6 +159,8 @@ async def confirm_clear_today(call: CallbackQuery):
 
 @router.callback_query(F.data == "confirm_clear")
 async def do_clear_today(call: CallbackQuery, state: FSMContext):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await call.answer()  # ACK
 
     today = datetime.now().date()
@@ -199,6 +211,8 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
 # Отмена
 @router.callback_query(F.data == "cancel_delete")
 async def cancel_delete(call: CallbackQuery, state: FSMContext):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await state.clear()
     await call.message.delete()
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)

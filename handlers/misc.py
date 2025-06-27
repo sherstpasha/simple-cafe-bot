@@ -3,6 +3,7 @@
 import logging
 from aiogram import Router
 from aiogram.types import Message
+from db import get_user_role
 
 router = Router()
 

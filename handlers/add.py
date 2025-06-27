@@ -10,7 +10,7 @@ from mistralai import Mistral
 from config import MENU_FILE, MISTRAL_API_KEY, MISTRAL_MODEL
 from utils import edit_or_send, transcribe_voice, notify_temp, send_and_track
 from keyboards import show_main_menu, confirm_keyboard
-from db import add_order_items
+from db import add_order_items, get_user_role
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -24,6 +24,10 @@ mistral_client = Mistral(api_key=MISTRAL_API_KEY)
 
 @router.message()
 async def handle_message(message: Message, state: FSMContext, bot):
+    role = get_user_role(message.from_user.id)
+    if role != "Стою на кассе":
+        # удаляем или игнорируем
+        return await message.delete()
     try:
         user_id = message.from_user.id
         chat_id = message.chat.id
@@ -171,6 +175,8 @@ async def handle_message(message: Message, state: FSMContext, bot):
 
 @router.callback_query(F.data == "confirm_add")
 async def confirm_add(call: CallbackQuery, state: FSMContext):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await call.answer()
     data = await state.get_data()
     items = data.get("items", [])

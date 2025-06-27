@@ -12,12 +12,15 @@ from reports import generate_reports
 from keyboards import show_main_menu
 from utils import user_last_bot_message
 from datetime import datetime, timedelta
+from db import get_user_role
 
 router = Router()
 
 
 @router.callback_query(F.data == "report")
 async def choose_period(call: CallbackQuery, state: FSMContext, bot):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await state.clear()
     last = user_last_bot_message.get(call.from_user.id)
     if last:
@@ -43,6 +46,8 @@ async def choose_period(call: CallbackQuery, state: FSMContext, bot):
 
 @router.callback_query(F.data.in_({"report_today", "report_yesterday", "report_all"}))
 async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     today = datetime.now().date()
     if call.data == "report_today":
         start, end = today, today
@@ -65,6 +70,8 @@ async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
 
 @router.callback_query(F.data == "cancel_report")
 async def cancel_report(call: CallbackQuery, state: FSMContext, bot):
+    if get_user_role(call.from_user.id) != "Стою на кассе":
+        return await call.answer("Недостаточно прав", show_alert=True)
     await state.clear()
     try:
         await call.message.delete()
