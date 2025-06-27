@@ -2,7 +2,7 @@ import os
 import logging
 from aiogram.types import InlineKeyboardMarkup
 from aiogram import Bot
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 
 import speech_recognition as sr
 from pydub import AudioSegment
@@ -92,10 +92,20 @@ async def send_and_track(
     return msg
 
 
-async def notify_temp(message, text: str, delay: int = 4):
-    msg = await message.answer(text, disable_notification=True)
-    await asyncio.sleep(delay)
-    try:
-        await msg.delete()
-    except:
-        pass
+async def notify_temp(target: Message | CallbackQuery, text: str, delay: int = 4):
+    """
+    Показывает временное уведомление:
+    - Если target — CallbackQuery, вызывает call.answer (toast).
+    - Если target — Message, отправляет сообщение и удаляет его через delay секунд.
+    """
+    if isinstance(target, CallbackQuery):
+        # показа "тоста" без alert-а
+        await target.answer(text, show_alert=False)
+    else:
+        # временное сообщение под чистку
+        msg = await target.answer(text, disable_notification=True)
+        await asyncio.sleep(delay)
+        try:
+            await msg.delete()
+        except:
+            pass

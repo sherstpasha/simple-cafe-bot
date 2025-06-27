@@ -4,9 +4,14 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
-from db import get_user_orders, delete_order, log_action, delete_orders_today
+from db import (
+    get_user_orders_with_items,
+    delete_orders_today,
+    delete_entire_order,
+    log_action,
+)
 from keyboards import show_main_menu, confirm_keyboard
-from utils import send_and_track
+from utils import send_and_track, notify_temp
 
 
 router = Router()
@@ -38,45 +43,49 @@ async def reset_page(call: CallbackQuery, state: FSMContext):
     await display_orders(call, state, offset=0)
 
 
-# Отображение заказов
 async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
-    orders = get_user_orders(call.from_user.id)
+    """
+    Показывает пагинированный список полных заказов (с позициями и суммами).
+    """
+    orders = get_user_orders_with_items(call.from_user.id)
     page = orders[offset : offset + ORDERS_PER_PAGE]
 
     if not page:
-        await call.message.edit_text("🔸 У вас пока нет заказов.")
+        # вместо edit_text — временное уведомление
+        await notify_temp(call, "🔸 У вас пока нет заказов.")
         await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
         return
 
     text_lines = []
     buttons = []
     for idx, order in enumerate(page, start=1):
+        # форматируем время
         try:
             dt = datetime.fromisoformat(order["date"])
             formatted = dt.strftime("%Y-%m-%d %H:%M")
         except Exception:
             formatted = order["date"]
 
-        text_lines.append(
-            f"{idx}. {formatted} | {order['payment_type']} | {order['item_name']}"
+        # собираем позиционный список
+        items_summary = "; ".join(
+            f"{it['item_name']}×{it['quantity']}({it['price']}₽)"
+            for it in order["items"]
         )
-        # Кнопка удаления по ID заказа
+        text_lines.append(
+            f"{idx}. {formatted} | {order['payment_type']} | {items_summary} | Итого: {order['total']}₽"
+        )
+
         buttons.append(
             [InlineKeyboardButton(text=str(idx), callback_data=f"del_{order['id']}")]
         )
 
-    # Навигация
-    navigation = []
+    # навигация
+    nav = []
     if offset + ORDERS_PER_PAGE < len(orders):
-        navigation.append(
-            InlineKeyboardButton(text="⏭ Далее", callback_data="next_page")
-        )
+        nav.append(InlineKeyboardButton(text="⏭ Далее", callback_data="next_page"))
     if offset > 0:
-        navigation.append(
-            InlineKeyboardButton(text="🔙 В начало", callback_data="reset_page")
-        )
+        nav.append(InlineKeyboardButton(text="🔙 В начало", callback_data="reset_page"))
 
-    # Управляющие кнопки
     control = [
         InlineKeyboardButton(
             text="🧹 Очистить за сегодня", callback_data="clear_today"
@@ -84,98 +93,106 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_delete"),
     ]
 
-    markup = InlineKeyboardMarkup(inline_keyboard=buttons + [navigation] + [control])
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons + [nav] + [control])
     await call.message.edit_text(
         "📋 Ваши заказы:\n\n" + "\n".join(text_lines), reply_markup=markup
     )
 
 
-# Удаление одной записи
 @router.callback_query(F.data.startswith("del_"))
 async def delete_one(call: CallbackQuery, state: FSMContext):
-    order_id = int(call.data.split("_")[1])
+    """
+    Удаляет сразу весь заказ (orders + все его order_items),
+    и показывает пользователю итоговый список позиций и сумму.
+    """
+    order_id = int(call.data.split("_", 1)[1])
+    username = call.from_user.username or ""
 
-    # Получаем данные заказа по ID
-    orders = get_user_orders(call.from_user.id)
-    order = next((o for o in orders if o["id"] == order_id), None)
-
-    if order is None:
-        await call.answer("Запись не найдена.", show_alert=True)
+    # удаляем из БД и получаем список удалённых позиций
+    items = delete_entire_order(order_id, call.from_user.id, username)
+    if not items:
+        await call.answer("Заказ не найден или уже удалён.", show_alert=True)
         return
 
-    # Удаляем из БД
-    delete_order(order_id, call.from_user.id)
-
-    # Логируем
-    log_action(
-        action_type="delete",
-        payment_type=order["payment_type"],
-        item_name=order["item_name"],
-        user_id=call.from_user.id,
-        username=call.from_user.username or "",
-    )
-
-    # Удаляем старое сообщение с кнопками (если ещё висит)
+    # удаляем старое сообщение с кнопками
     try:
         await call.message.delete()
-    except Exception:
+    except:
         pass
 
-    # Отправляем подтверждение
-    from utils import send_and_track
-
-    try:
-        dt = datetime.fromisoformat(order["date"])
-        formatted = dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        formatted = order["date"]
+    # собираем summary
+    total = sum(it["price"] * it["quantity"] for it in items)
+    summary = "\n".join(
+        f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽" for it in items
+    )
 
     await send_and_track(
         bot=call.bot,
         user_id=call.from_user.id,
         chat_id=call.message.chat.id,
-        text=f"❌ Запись от: {formatted}, {order['payment_type']}, {order['item_name']} удалена.",
+        text=(f"❌ Заказ #{order_id} удалён:\n{summary}\n\n💰 Итого: {total}₽"),
     )
+
+    # показываем главное меню
+    await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
 # Очистка за сегодня
 @router.callback_query(F.data == "clear_today")
 async def confirm_clear_today(call: CallbackQuery):
-    markup = confirm_keyboard("✅ Очистить", "confirm_clear", "cancel_delete")
+    await call.answer()  # ACK
+    kb = confirm_keyboard("✅ Очистить", "confirm_clear", "cancel_delete")
     await call.message.edit_text(
-        "🔸 Очистить все записи за сегодня?", reply_markup=markup
+        "🔸 Вы действительно хотите удалить все заказы за сегодня?", reply_markup=kb
     )
 
 
 @router.callback_query(F.data == "confirm_clear")
 async def do_clear_today(call: CallbackQuery, state: FSMContext):
-    count, deleted_orders = delete_orders_today(call.from_user.id)
-    for order in deleted_orders:
-        log_action(
-            "очистка_сегодня",
-            order["payment_type"],
-            order["item_name"],
-            call.from_user.id,
-            call.from_user.username or "",
-        )
+    await call.answer()  # ACK
+
+    today = datetime.now().date()
+    orders = get_user_orders_with_items(call.from_user.id)
+    deleted_count = 0
+
+    for order in orders:
+        try:
+            order_date = datetime.fromisoformat(order["date"]).date()
+        except Exception:
+            continue
+        if order_date == today:
+            items = delete_entire_order(
+                order["id"], call.from_user.id, call.from_user.username or ""
+            )
+            if items:
+                deleted_count += 1
+                for it in items:
+                    log_action(
+                        action_type="очистка_сегодня",
+                        payment_type=order["payment_type"],
+                        item_name=it["item_name"],
+                        user_id=call.from_user.id,
+                        username=call.from_user.username or "",
+                    )
 
     await state.clear()
-
-    # Удалить предыдущее сообщение с кнопками
     try:
         await call.message.delete()
-    except Exception:
+    except:
         pass
 
-    # Отправить подтверждение
-    await send_and_track(
-        bot=call.bot,
-        user_id=call.from_user.id,
-        chat_id=call.message.chat.id,
-        text=f"✅ Очищено {count} записи(ей) за {datetime.now().date()}",
-    )
+    if deleted_count:
+        # показываем полноценное подтверждение очистки
+        await send_and_track(
+            bot=call.bot,
+            user_id=call.from_user.id,
+            chat_id=call.message.chat.id,
+            text=f"✅ Удалено {deleted_count} заказ(ов) за {today}",
+        )
+    else:
+        # если нечего удалять — просто тост
+        await notify_temp(call, f"🔸 Нет заказов за {today} для удаления.")
 
-    # Показать главное меню
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 

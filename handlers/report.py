@@ -9,10 +9,8 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from reports import generate_reports
-from utils import user_last_bot_message
 from keyboards import show_main_menu
-
-
+from utils import user_last_bot_message
 from datetime import datetime, timedelta
 
 router = Router()
@@ -21,16 +19,13 @@ router = Router()
 @router.callback_query(F.data == "report")
 async def choose_period(call: CallbackQuery, state: FSMContext, bot):
     await state.clear()
-
-    # Удалить предыдущее меню
-    last_msg_id = user_last_bot_message.get(call.from_user.id)
-    if last_msg_id:
+    last = user_last_bot_message.get(call.from_user.id)
+    if last:
         try:
-            await bot.delete_message(call.message.chat.id, last_msg_id)
-        except Exception:
+            await bot.delete_message(call.message.chat.id, last)
+        except:
             pass
 
-    # Показать кнопки выбора периода
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 За сегодня", callback_data="report_today")],
@@ -50,28 +45,29 @@ async def choose_period(call: CallbackQuery, state: FSMContext, bot):
 async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
     today = datetime.now().date()
     if call.data == "report_today":
-        start_date = end_date = today
+        start, end = today, today
     elif call.data == "report_yesterday":
-        start_date = end_date = today - timedelta(days=1)
+        start, end = today - timedelta(days=1), today - timedelta(days=1)
     else:
-        start_date = end_date = None  # Без фильтра
+        start = end = None
 
-    # Удалить сообщение с выбором периода
     try:
         await call.message.delete()
-    except Exception:
+    except:
         pass
 
-    # Генерация отчёта с фильтрами
-    report_path, log_path = generate_reports(start_date, end_date)
+    report_path, log_path = generate_reports(start, end)
 
-    await call.message.answer_document(document=FSInputFile(report_path))
-    await call.message.answer_document(document=FSInputFile(log_path))
-
+    await call.message.answer_document(FSInputFile(report_path))
+    await call.message.answer_document(FSInputFile(log_path))
     await show_main_menu(call.from_user.id, call.message.chat.id, bot)
 
 
 @router.callback_query(F.data == "cancel_report")
 async def cancel_report(call: CallbackQuery, state: FSMContext, bot):
     await state.clear()
+    try:
+        await call.message.delete()
+    except:
+        pass
     await show_main_menu(call.from_user.id, call.message.chat.id, bot)
