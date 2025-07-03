@@ -7,3 +7,4 @@ pydub
 mistralai
 rapidfuzz
 nltk
+openai==0.28

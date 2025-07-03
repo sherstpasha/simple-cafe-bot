@@ -6,8 +6,8 @@ from aiogram.fsm.context import FSMContext
 
 import json, logging, re, ast, sqlite3, asyncio
 
-from mistralai import Mistral
-from config import MENU_FILE, MISTRAL_API_KEY, MISTRAL_MODEL
+from config import MENU_FILE
+from llm_client import complete
 from utils import edit_or_send, transcribe_voice, notify_temp, send_and_track
 from keyboards import show_main_menu, confirm_keyboard
 from db import add_order_items
@@ -18,9 +18,6 @@ logger = logging.getLogger(__name__)
 # загружаем меню из JSON
 with open(MENU_FILE, encoding="utf-8") as f:
     MENU_MAP = json.load(f)
-
-mistral_client = Mistral(api_key=MISTRAL_API_KEY)
-
 
 @router.message()
 async def handle_message(message: Message, state: FSMContext, bot):
@@ -50,42 +47,37 @@ async def handle_message(message: Message, state: FSMContext, bot):
         menu_text = "\n".join(f"- {k}" for k in MENU_MAP.keys())
 
         # промпт для LLM
-        response = mistral_client.chat.complete(
-            model=MISTRAL_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты помогаешь принимать заказы в кафе.\n"
-                        "Вот актуальное меню:\n"
-                        f"{menu_text}\n\n"
-                        "В сообщении пользователя есть основные позиции (напитки/товары) и опциональные добавки.\n"
-                        "Основные позиции (item_name) **обязательно** должны быть из меню.\n"
-                        "Добавки (addons) могут быть любыми: если совпадают с пунктом меню — их цена берётся из меню, "
-                        "если нет — считаются бесплатными (0₽).\n\n"
-                        "Оплата всегда только двух видов: **Наличный** или **Безналичный**.\n"
-                        "Если в тексте есть «картой», «карта», «перевод» и т.п. — выбери **Безналичный**; "
-                        "если «наличными», «наличка» и т.п. — **Наличный**. Если оплата не написана не пиши ничего.\n\n"
-                        "В ответе СТРОГО сначала JSON-массив позиций с полями:\n"
-                        "  • item_name: строка\n"
-                        "  • quantity: число\n"
-                        "  • addons: массив строк (может быть пустым)\n\n"
-                        "А затем на отдельной строке — payment_type: <Наличный или Безналичный>.\n\n"
-                        "Пример:\n"
-                        "```\n"
-                        "[\n"
-                        '  {"item_name": "Латте", "quantity": 1, "addons": ["Сахар"]},\n'
-                        '  {"item_name": "Американо", "quantity": 2, "addons": []}\n'
-                        "]\n"
-                        "payment_type: Наличный\n"
-                        "```"
-                    ),
-                },
-                {"role": "user", "content": user_text},
-            ],
-        )
+        prompt_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты помогаешь принимать заказы в кафе.\n"
+                    "Вот актуальное меню:\n"
+                    f"{menu_text}\n\n"
+                    "В сообщении пользователя есть основные позиции (напитки/товары) и опциональные добавки.\n"
+                    "Основные позиции (item_name) **обязательно** должны быть из меню.\n"
+                    "Добавки (addons) могут быть любыми: если совпадают с пунктом меню — их цена берётся из меню, "
+                    "если нет — считаются бесплатными (0₽).\n\n"
+                    "Оплата всегда только двух видов: **Наличный** или **Безналичный**.\n"
+                    "Если в тексте есть «картой», «карта», «перевод» и т.п. — выбери **Безналичный**; "
+                    "если «наличными», «наличка» и т.п. — **Наличный**. Если оплата не написана — не пиши ничего.\n\n"
+                    "В ответе СТРОГО сначала JSON-массив позиций с полями:\n"
+                    "  • item_name: строка\n"
+                    "  • quantity: число\n"
+                    "  • addons: массив строк (может быть пустым)\n\n"
+                    "А затем на отдельной строке — payment_type: <Наличный или Безналичный>.\n\n"
+                    "Пример:\n```\n"
+                    "[\n"
+                    "  {\"item_name\": \"Латте\", \"quantity\": 1, \"addons\": [\"Сахар\"]},\n"
+                    "  {\"item_name\": \"Американо\", \"quantity\": 2, \"addons\": []}\n"
+                    "]\npayment_type: Наличный\n"
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ]
 
-        reply = response.choices[0].message.content.strip()
+        # вызов LLM с fallback
+        reply = await complete(prompt_messages)
         logger.info(f"[LLM reply]: {reply}")
 
         # парсим payment_type
@@ -150,7 +142,7 @@ async def handle_message(message: Message, state: FSMContext, bot):
         lines = []
         for i, it in enumerate(normalized, start=1):
             lines.append(f"{i}) {it['item_name']} — {it['price']}₽")
-            for a in it["addons"]:
+            for a in it['addons']:
                 lines.append(f"   • {a['name']} — {a['price']}₽")
 
         kb = confirm_keyboard("✅ Добавить", "confirm_add", "cancel_add")
@@ -167,6 +159,7 @@ async def handle_message(message: Message, state: FSMContext, bot):
     except Exception as e:
         logger.exception("Ошибка при обработке сообщения")
         await notify_temp(message, "⚠️ Не удалось обработать заказ. Попробуйте ещё раз.")
+
 
 
 @router.callback_query(F.data == "confirm_add")
@@ -192,8 +185,7 @@ async def confirm_add(call: CallbackQuery, state: FSMContext):
                 )
     else:
         return await notify_temp(
-            call, "⚠️ Не удалось записать заказ. Попробуйте ещё раз."
-        )
+            call, "⚠️ Не удалось записать заказ. Попробуйте ещё раз.")
 
     # удаляем клавиатуру
     try:
@@ -206,7 +198,7 @@ async def confirm_add(call: CallbackQuery, state: FSMContext):
     lines = []
     for i, it in enumerate(items, start=1):
         lines.append(f"{i}) {it['item_name']} — {it['price']}₽")
-        for a in it["addons"]:
+        for a in it['addons']:
             lines.append(f"   • {a['name']} — {a['price']}₽")
 
     await send_and_track(
