@@ -1,13 +1,13 @@
 # handlers/misc.py
 
 import logging
-from aiogram import Router
+from aiogram import Router, F
 from aiogram.types import Message
 
 router = Router()
 
 
-@router.message()
+@router.message(F.chat.type == "private")
 async def delete_all(message: Message):
     try:
         await message.delete()

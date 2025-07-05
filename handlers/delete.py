@@ -1,26 +1,27 @@
 # handlers/delete.py
 
+import logging
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from db import (
     get_user_orders_with_items,
-    delete_orders_today,
     delete_entire_order,
     log_action,
 )
 from keyboards import show_main_menu, confirm_keyboard
 from utils import send_and_track, notify_temp
-
+from config import GROUP_CHAT_ID
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 ORDERS_PER_PAGE = 5
 
 
 # Показать список заказов
-@router.callback_query(F.data == "delete")
+@router.callback_query(F.message.chat.type == "private", F.data == "delete")
 async def show_orders(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(offset=0)
@@ -28,7 +29,7 @@ async def show_orders(call: CallbackQuery, state: FSMContext):
 
 
 # Кнопка "⏭ Далее"
-@router.callback_query(F.data == "next_page")
+@router.callback_query(F.message.chat.type == "private", F.data == "next_page")
 async def next_page(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     offset = data.get("offset", 0) + ORDERS_PER_PAGE
@@ -37,7 +38,7 @@ async def next_page(call: CallbackQuery, state: FSMContext):
 
 
 # Кнопка "🔙 В начало"
-@router.callback_query(F.data == "reset_page")
+@router.callback_query(F.message.chat.type == "private", F.data == "reset_page")
 async def reset_page(call: CallbackQuery, state: FSMContext):
     await state.update_data(offset=0)
     await display_orders(call, state, offset=0)
@@ -51,7 +52,6 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
     page = orders[offset : offset + ORDERS_PER_PAGE]
 
     if not page:
-        # вместо edit_text — временное уведомление
         await notify_temp(call, "🔸 У вас пока нет заказов.")
         await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
         return
@@ -63,10 +63,9 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
         try:
             dt = datetime.fromisoformat(order["date"])
             formatted = dt.strftime("%Y-%m-%d %H:%M")
-        except Exception:
+        except:
             formatted = order["date"]
 
-        # собираем позиционный список
         items_summary = "; ".join(
             f"{it['item_name']}×{it['quantity']}({it['price']}₽)"
             for it in order["items"]
@@ -74,7 +73,6 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
         text_lines.append(
             f"{idx}. {formatted} | {order['payment_type']} | {items_summary} | Итого: {order['total']}₽"
         )
-
         buttons.append(
             [InlineKeyboardButton(text=str(idx), callback_data=f"del_{order['id']}")]
         )
@@ -95,62 +93,74 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
 
     markup = InlineKeyboardMarkup(inline_keyboard=buttons + [nav] + [control])
     await call.message.edit_text(
-        "📋 Ваши заказы:\n\n" + "\n".join(text_lines), reply_markup=markup
+        "📋 Ваши заказы:\n\n" + "\n".join(text_lines),
+        reply_markup=markup,
     )
 
 
-@router.callback_query(F.data.startswith("del_"))
+# Удалить один заказ
+@router.callback_query(F.message.chat.type == "private", F.data.startswith("del_"))
 async def delete_one(call: CallbackQuery, state: FSMContext):
-    """
-    Удаляет сразу весь заказ (orders + все его order_items),
-    и показывает пользователю итоговый список позиций и сумму.
-    """
     order_id = int(call.data.split("_", 1)[1])
     username = call.from_user.username or ""
 
-    # удаляем из БД и получаем список удалённых позиций
     items = delete_entire_order(order_id, call.from_user.id, username)
     if not items:
         await call.answer("Заказ не найден или уже удалён.", show_alert=True)
         return
 
-    # удаляем старое сообщение с кнопками
     try:
         await call.message.delete()
     except:
         pass
 
-    # собираем summary
     total = sum(it["price"] * it["quantity"] for it in items)
     summary = "\n".join(
         f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽" for it in items
     )
+    user_text = f"❌ Заказ #{order_id} удалён:\n{summary}\n\n💰 Итого: {total}₽"
 
+    # отправляем пользователю
     await send_and_track(
         bot=call.bot,
         user_id=call.from_user.id,
         chat_id=call.message.chat.id,
-        text=(f"❌ Заказ #{order_id} удалён:\n{summary}\n\n💰 Итого: {total}₽"),
+        text=user_text,
     )
 
-    # показываем главное меню
+    # дублируем в группу
+    try:
+        await call.bot.send_message(
+            GROUP_CHAT_ID,
+            f"🗑 <b>Заказ #{order_id} удалён</b> пользователем @{call.from_user.username or call.from_user.id}\n\n"
+            + summary
+            + f"\n\n💰 Итого: {total}₽",
+            parse_mode="HTML",
+        )
+        logger.info(
+            f"Уведомление об удалении заказа #{order_id} отправлено в группу {GROUP_CHAT_ID}"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отправить уведомление об удалении в группу: {e}")
+
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
-# Очистка за сегодня
-@router.callback_query(F.data == "clear_today")
+# Подтверждение очистки за сегодня
+@router.callback_query(F.message.chat.type == "private", F.data == "clear_today")
 async def confirm_clear_today(call: CallbackQuery):
-    await call.answer()  # ACK
+    await call.answer()
     kb = confirm_keyboard("✅ Очистить", "confirm_clear", "cancel_delete")
     await call.message.edit_text(
-        "🔸 Вы действительно хотите удалить все заказы за сегодня?", reply_markup=kb
+        "🔸 Вы действительно хотите удалить все заказы за сегодня?",
+        reply_markup=kb,
     )
 
 
-@router.callback_query(F.data == "confirm_clear")
+# Удалить за сегодня
+@router.callback_query(F.message.chat.type == "private", F.data == "confirm_clear")
 async def do_clear_today(call: CallbackQuery, state: FSMContext):
-    await call.answer()  # ACK
-
+    await call.answer()
     today = datetime.now().date()
     orders = get_user_orders_with_items(call.from_user.id)
     deleted_count = 0
@@ -158,7 +168,7 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
     for order in orders:
         try:
             order_date = datetime.fromisoformat(order["date"]).date()
-        except Exception:
+        except:
             continue
         if order_date == today:
             items = delete_entire_order(
@@ -182,23 +192,37 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
         pass
 
     if deleted_count:
-        # показываем полноценное подтверждение очистки
+        text_user = f"✅ Удалено {deleted_count} заказ(ов) за {today}"
         await send_and_track(
             bot=call.bot,
             user_id=call.from_user.id,
             chat_id=call.message.chat.id,
-            text=f"✅ Удалено {deleted_count} заказ(ов) за {today}",
+            text=text_user,
         )
+        # дублируем в группу
+        try:
+            await call.bot.send_message(
+                GROUP_CHAT_ID,
+                f"🧹 <b>Удалено {deleted_count} заказ(ов) за {today}</b> пользователем @{call.from_user.username or call.from_user.id}",
+                parse_mode="HTML",
+            )
+            logger.info(
+                f"Уведомление об очистке за сегодня отправлено в группу {GROUP_CHAT_ID}"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление об очистке в группу: {e}")
     else:
-        # если нечего удалять — просто тост
         await notify_temp(call, f"🔸 Нет заказов за {today} для удаления.")
 
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
 # Отмена
-@router.callback_query(F.data == "cancel_delete")
+@router.callback_query(F.message.chat.type == "private", F.data == "cancel_delete")
 async def cancel_delete(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await call.message.delete()
+    try:
+        await call.message.delete()
+    except:
+        pass
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)

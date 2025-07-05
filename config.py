@@ -7,6 +7,7 @@ load_dotenv()
 
 # Telegram Bot
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
 # FFmpeg (полный путь к бинарю)
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")

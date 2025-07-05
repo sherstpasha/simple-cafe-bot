@@ -1,4 +1,3 @@
-# keyboards.py
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import send_and_track
@@ -16,8 +15,10 @@ def confirm_keyboard(
 
 
 def get_main_menu() -> InlineKeyboardMarkup:
+    # Основное меню действий: показать меню, удалить заказы, получить отчёт
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Меню", callback_data="show_menu")],
             [InlineKeyboardButton(text="❌ Удалить", callback_data="delete")],
             [InlineKeyboardButton(text="📄 Получить отчёт", callback_data="report")],
         ]

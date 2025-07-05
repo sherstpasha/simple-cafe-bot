@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT,
     user_id INTEGER,
-    username TEXT
+    username TEXT,
+    raw_text TEXT
 );
 """
 CREATE_LOG = """
@@ -168,7 +169,7 @@ def delete_orders_today(user_id):
     return len(rows), [{"payment_type": r[0], "item_name": r[1]} for r in rows]
 
 
-def add_order_items(items: list[dict], user_id: int, username: str):
+def add_order_items(items: list[dict], user_id: int, username: str, raw_text: str = ""):
     """
     Записывает в БД сам заказ и сразу все позиции + логи в одном соединении.
     """
@@ -177,9 +178,10 @@ def add_order_items(items: list[dict], user_id: int, username: str):
 
     # 1) создаём новую запись в orders
     cursor.execute(
-        "INSERT INTO orders (date, user_id, username) VALUES (?, ?, ?)",
-        (datetime.now().isoformat(), user_id, username),
+        "INSERT INTO orders (date, user_id, username, raw_text) VALUES (?, ?, ?, ?)",
+        (datetime.now().isoformat(), user_id, username, raw_text),
     )
+
     order_id = cursor.lastrowid
 
     now = datetime.now().isoformat()

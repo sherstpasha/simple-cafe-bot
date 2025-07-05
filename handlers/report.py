@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 router = Router()
 
 
-@router.callback_query(F.data == "report")
+@router.callback_query(F.message.chat.type == "private", F.data == "report")
 async def choose_period(call: CallbackQuery, state: FSMContext, bot):
     await state.clear()
     last = user_last_bot_message.get(call.from_user.id)
@@ -41,7 +41,10 @@ async def choose_period(call: CallbackQuery, state: FSMContext, bot):
     await call.message.answer("📊 Выберите период для отчёта:", reply_markup=kb)
 
 
-@router.callback_query(F.data.in_({"report_today", "report_yesterday", "report_all"}))
+@router.callback_query(
+    F.message.chat.type == "private",
+    F.data.in_({"report_today", "report_yesterday", "report_all"}),
+)
 async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
     today = datetime.now().date()
     if call.data == "report_today":
@@ -63,7 +66,7 @@ async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
     await show_main_menu(call.from_user.id, call.message.chat.id, bot)
 
 
-@router.callback_query(F.data == "cancel_report")
+@router.callback_query(F.message.chat.type == "private", F.data == "cancel_report")
 async def cancel_report(call: CallbackQuery, state: FSMContext, bot):
     await state.clear()
     try:

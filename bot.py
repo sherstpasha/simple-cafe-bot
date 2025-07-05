@@ -15,7 +15,7 @@ from db import init_db
 from keyboards import show_main_menu
 
 # Роутеры
-from handlers import add, delete, report, misc
+from handlers import add, delete, report, misc, menu, chat_events
 
 # Настройка логгирования и базы данных
 logging.basicConfig(level=logging.INFO)
@@ -30,10 +30,12 @@ dp.include_router(add.router)
 dp.include_router(delete.router)
 dp.include_router(report.router)
 dp.include_router(misc.router)
+dp.include_router(menu.router)
+dp.include_router(chat_events.router)
 
 
 # Обработка команды /start
-@dp.message(F.text == "/start")
+@dp.message(F.chat.type == "private", F.text == "/start")
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await show_main_menu(message.from_user.id, message.chat.id, bot)
