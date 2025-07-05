@@ -13,6 +13,7 @@ from aiogram.fsm.context import FSMContext
 from config import BOT_TOKEN
 from db import init_db
 from keyboards import show_main_menu
+from utils import send_and_track
 
 # Роутеры
 from handlers import add, delete, report, misc, menu, chat_events
@@ -37,7 +38,23 @@ dp.include_router(chat_events.router)
 # Обработка команды /start
 @dp.message(F.chat.type == "private", F.text == "/start")
 async def cmd_start(message: Message, state: FSMContext):
+    # очищаем предыдущее состояние
     await state.clear()
+
+    # 1) Приветственная инструкция
+    welcome = (
+        "👋 Привет! Я — помощник кассира.\n\n"
+        "Как пользоваться:\n"
+        "• Отправляйте текстовые или голосовые сообщения с вашими заказами.\n"
+        "  Языковая модель разберёт их и соберу для вас структурированный заказ.\n"
+        "• Все оформленные заказы будут пересылаться в группу бариста.\n"
+        "• Удаляйте свои заказы кнопкой «❌ Удалить».\n"
+        "• Генерируйте отчёты кнопкой «📄 Получить отчёт».\n\n"
+        "Поехали!"
+    )
+    await send_and_track(bot, message.from_user.id, message.chat.id, welcome)
+
+    # 2) Главная клавиатура
     await show_main_menu(message.from_user.id, message.chat.id, bot)
 
 
