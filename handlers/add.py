@@ -1,10 +1,8 @@
-# handlers/add.py
-
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
-import json, logging, re, ast, sqlite3, asyncio
+import json, logging, sqlite3, asyncio
 
 from config import MENU_FILE
 from llm_client import complete
@@ -17,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 # загружаем меню из JSON
 with open(MENU_FILE, encoding="utf-8") as f:
-    MENU_MAP = json.load(f)
+    MENU = json.load(f)
+MAIN_MENU = MENU["main"]
+ADDONS = MENU["addons"]
+
 
 @router.message()
 async def handle_message(message: Message, state: FSMContext, bot):
@@ -25,124 +26,148 @@ async def handle_message(message: Message, state: FSMContext, bot):
         user_id = message.from_user.id
         chat_id = message.chat.id
 
-        # удаляем исходное сообщение
+        # удаляем оригинал
         try:
             await message.delete()
         except:
             pass
 
-        # получаем текст (или распознаём голос)
+        # получаем текст или распознаём голос
         if message.voice:
             user_text = await transcribe_voice(bot, message)
             if not user_text:
                 return await notify_temp(
-                    message, "🗣 Не удалось распознать речь, попробуйте ещё раз."
+                    message, "🗣 Не получилось распознать речь, попробуйте ещё раз."
                 )
         else:
             user_text = message.text.strip()
-
         logger.info(f"[User Input]: {user_text}")
 
-        # готовим меню в текст для промпта
-        menu_text = "\n".join(f"- {k}" for k in MENU_MAP.keys())
+        # готовим меню для промпта
+        main_text = "\n".join(f"- {k}" for k in MAIN_MENU)
+        addon_text = "\n".join(f"- {k}" for k in ADDONS)
 
-        # промпт для LLM
+        system_instructions = f"""
+Ты — помощник для разбора заказа из текста.
+
+Вот актуальное меню с ценами:
+Основные позиции:
+{main_text}
+
+Добавки:
+{addon_text}
+
+Твоя задача:
+– Определи список заказанных позиций (it), основываясь **только** на "Основных позициях".
+– К каждой позиции укажи:
+  • n — item_name строго из основного меню
+  • q — quantity (целое, default=1)
+  • a — список addons (имя и цена из ADDONS, иначе price=0)
+– Определи pay:
+  • 1 — Безналичный
+  • 0 — Наличный
+  • -1 — не указано
+
+**Важно**:
+– В n только точное совпадение из "Основных позиций".
+– В a только названия из раздела добавок или новые (free).
+
+Формат ответа — только JSON-объект с:
+- "it": [...]
+- "pay": number
+
+Примеры:
+
+- Запрос: "2 американо наличкой"
+{{
+  "it":[
+    {{"n":"Американо","q":2,"a":[]}}
+  ],
+  "pay":0
+}}
+
+- Запрос: "латте с шоколадным сиропом и капучино с фисташковым сиропом на карту"
+{{
+  "it":[
+    {{"n":"Латте","q":1,"a":["Шоколадный сироп"]}},
+    {{"n":"Капучино","q":1,"a":["Фисташковый сироп"]}}
+  ],
+  "pay":1
+}}
+
+- Запрос: "чай с грушей ромашковый и ройбуш на кокосовом молоке перевод"
+{{
+  "it":[
+    {{"n":"Чай: Ромашковый с грушей","q":1,"a":[]}},
+    {{"n":"Чай: Ройбуш Самурай","q":1,"a":["Альтернативное молоко (миндаль/кокос)"]}}
+  ],
+  "pay":1
+}}
+
+Никакого другого текста — только JSON.
+""".strip()
+
         prompt_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Ты помогаешь принимать заказы в кафе.\n"
-                    "Вот актуальное меню:\n"
-                    f"{menu_text}\n\n"
-                    "В сообщении пользователя есть основные позиции (напитки/товары) и опциональные добавки.\n"
-                    "Основные позиции (item_name) **обязательно** должны быть из меню.\n"
-                    "Добавки (addons) могут быть любыми: если совпадают с пунктом меню — их цена берётся из меню, "
-                    "если нет — считаются бесплатными (0₽).\n\n"
-                    "Оплата всегда только двух видов: **Наличный** или **Безналичный**.\n"
-                    "Если в тексте есть «картой», «карта», «перевод» и т.п. — выбери **Безналичный**; "
-                    "если «наличными», «наличка» и т.п. — **Наличный**. Если оплата не написана — не пиши ничего.\n\n"
-                    "В ответе СТРОГО сначала JSON-массив позиций с полями:\n"
-                    "  • item_name: строка\n"
-                    "  • quantity: число\n"
-                    "  • addons: массив строк (может быть пустым)\n\n"
-                    "А затем на отдельной строке — payment_type: <Наличный или Безналичный>.\n\n"
-                    "Пример:\n```\n"
-                    "[\n"
-                    "  {\"item_name\": \"Латте\", \"quantity\": 1, \"addons\": [\"Сахар\"]},\n"
-                    "  {\"item_name\": \"Американо\", \"quantity\": 2, \"addons\": []}\n"
-                    "]\npayment_type: Наличный\n"
-                ),
-            },
+            {"role": "system", "content": system_instructions},
             {"role": "user", "content": user_text},
         ]
+        logger.debug(prompt_messages)
 
-        # вызов LLM с fallback
         reply = await complete(prompt_messages)
         logger.info(f"[LLM reply]: {reply}")
 
-        # парсим payment_type
-        m = re.search(r"payment_type:\s*(\w+)", reply, re.IGNORECASE)
-        payment_type = m.group(1).capitalize() if m else ""
-        if payment_type not in ("Наличный", "Безналичный"):
-            return await notify_temp(
-                message, "⚠️ Тип оплаты не распознан. Укажите «наличными» или «картой»."
-            )
+        # парсим ответ
+        try:
+            result = json.loads(reply)
+            raw_items = result.get("it", [])
+            pay_code = int(result.get("pay", -1))
+        except json.JSONDecodeError:
+            return await notify_temp(message, "⚠️ Не удалось распознать ответ модели.")
 
-        # парсим JSON-блок
-        block = re.search(r"\[.*\]", reply, re.DOTALL)
-        raw_items = ast.literal_eval(block.group(0)) if block else []
-        if not raw_items:
-            return await notify_temp(
-                message, "⚠️ Не удалось распознать ни одной позиции заказа."
-            )
+        # сопоставление pay
+        pay_text = ""
+        if pay_code == 0:
+            pay_text = "Наличный"
+        elif pay_code == 1:
+            pay_text = "Безналичный"
 
-        # нормализуем
+        # нормализация
         normalized = []
         for entry in raw_items:
-            base = entry.get("item_name", "").strip()
-            qty = int(entry.get("quantity", 1))
-            addons = entry.get("addons", [])
-            # базовая позиция
-            key = next((k for k in MENU_MAP if base.lower() in k.lower()), None)
-            if not key:
+            name = entry.get("n", "").strip()
+            if name not in MAIN_MENU:
+                logger.warning(f"Пропущено: '{name}'")
                 continue
-            price = MENU_MAP[key]
-            name = key.split(":", 1)[-1].strip()
-
-            # обработка add-ons
+            qty = int(entry.get("q", 1))
+            addons_raw = entry.get("a", [])
             addons_info = []
-            for a in addons:
-                ak = next((k for k in MENU_MAP if a.lower() in k.lower()), None)
-                ap = MENU_MAP[ak] if ak else 0
-                an = ak.split(":", 1)[-1].strip() if ak else a
-                addons_info.append({"name": an, "price": ap})
-
+            for addon in addons_raw:
+                ad = addon.strip()
+                addons_info.append({"name": ad, "price": ADDONS.get(ad, 0)})
+            price = MAIN_MENU[name]
             for _ in range(qty):
                 normalized.append(
                     {
                         "item_name": name,
-                        "payment_type": payment_type,
-                        "price": price,
                         "quantity": 1,
+                        "price": price,
                         "addons": addons_info,
+                        "payment_type": pay_text,
                     }
                 )
-
         if not normalized:
-            return await notify_temp(message, "⚠️ Ни одна из позиций не нашлась в меню.")
+            return await notify_temp(message, "⚠️ Ни одна позиция не найдена в меню.")
 
-        # сохраняем в state и ждём подтверждения
         await state.update_data(items=normalized)
         await state.set_state("awaiting_add_confirmation")
 
-        # собираем summary
         total = sum(
             it["price"] + sum(a["price"] for a in it["addons"]) for it in normalized
         )
         lines = []
-        for i, it in enumerate(normalized, start=1):
+        for i, it in enumerate(normalized, 1):
             lines.append(f"{i}) {it['item_name']} — {it['price']}₽")
-            for a in it['addons']:
+            for a in it["addons"]:
                 lines.append(f"   • {a['name']} — {a['price']}₽")
 
         kb = confirm_keyboard("✅ Добавить", "confirm_add", "cancel_add")
@@ -150,16 +175,14 @@ async def handle_message(message: Message, state: FSMContext, bot):
             bot,
             user_id,
             chat_id,
-            f"🔹 Подтвердите заказ (оплата: <b>{payment_type}</b>):\n"
+            f"🔹 Подтвердите заказ (оплата: <b>{pay_text or 'не указана'}</b>):\n"
             + "\n".join(lines)
             + f"\n\n💰 Итого: <b>{total}₽</b>",
             kb,
         )
-
     except Exception as e:
         logger.exception("Ошибка при обработке сообщения")
-        await notify_temp(message, "⚠️ Не удалось обработать заказ. Попробуйте ещё раз.")
-
+        await notify_temp(message, "⚠️ Не удалось обработать заказ.")
 
 
 @router.callback_query(F.data == "confirm_add")
@@ -168,9 +191,7 @@ async def confirm_add(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     items = data.get("items", [])
     if not items:
-        return await notify_temp(call, "⚠️ Нет ни одной позиции для добавления.")
-
-    # повторяем до 3-х раз, если БД заблокирована
+        return await notify_temp(call, "⚠️ Нет ни одной позиции.")
     for _ in range(3):
         try:
             add_order_items(items, call.from_user.id, call.from_user.username or "")
@@ -179,42 +200,29 @@ async def confirm_add(call: CallbackQuery, state: FSMContext):
             if "locked" in str(err).lower():
                 await asyncio.sleep(0.5)
                 continue
-            else:
-                return await notify_temp(
-                    call, "⚠️ Ошибка базы данных. Попробуйте позже."
-                )
-    else:
-        return await notify_temp(
-            call, "⚠️ Не удалось записать заказ. Попробуйте ещё раз.")
-
-    # удаляем клавиатуру
+            return await notify_temp(call, "⚠️ Ошибка базы данных.")
     try:
         await call.message.delete()
     except:
         pass
-
-    # финальный ответ
     total = sum(it["price"] + sum(a["price"] for a in it["addons"]) for it in items)
     lines = []
-    for i, it in enumerate(items, start=1):
+    for i, it in enumerate(items, 1):
         lines.append(f"{i}) {it['item_name']} — {it['price']}₽")
-        for a in it['addons']:
+        for a in it["addons"]:
             lines.append(f"   • {a['name']} — {a['price']}₽")
-
     await send_and_track(
         call.bot,
         call.from_user.id,
         call.message.chat.id,
-        "✅ Заказ добавлен (оплата: <b>{}</b>):\n".format(items[0]["payment_type"])
+        f"✅ Заказ добавлен (оплата: <b>{items[0]['payment_type']}</b>):\n"
         + "\n".join(lines)
         + f"\n\n💰 Итого: <b>{total}₽</b>",
     )
-
     await state.clear()
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
-# ——————— Отмена ———————
 @router.callback_query(F.data == "cancel_add")
 async def cancel_add(call: CallbackQuery, state: FSMContext):
     await state.clear()
