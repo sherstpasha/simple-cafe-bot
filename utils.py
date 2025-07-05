@@ -10,7 +10,7 @@ from pydub import AudioSegment
 import asyncio
 
 from config import FFMPEG_PATH
-
+from config import GROUP_CHAT_ID, BOT_OWNER_ID
 
 # Глобальный словарь для хранения последних сообщений
 user_last_bot_message = {}
@@ -109,3 +109,20 @@ async def notify_temp(target: Message | CallbackQuery, text: str, delay: int = 4
             await msg.delete()
         except:
             pass
+
+
+async def check_membership(bot, user_id: int) -> bool:
+    """
+    Возвращает True, если пользователь user_id:
+      • владелец бота (BOT_OWNER_ID), или
+      • состоит в группе GROUP_CHAT_ID (member/creator/administrator).
+    Иначе False.
+    """
+    if user_id == BOT_OWNER_ID:
+        return True
+
+    try:
+        mem = await bot.get_chat_member(GROUP_CHAT_ID, user_id)
+        return mem.status in ("member", "creator", "administrator")
+    except:
+        return False

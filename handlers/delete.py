@@ -10,8 +10,8 @@ from db import (
     delete_entire_order,
     log_action,
 )
-from keyboards import show_main_menu, confirm_keyboard
-from utils import send_and_track, notify_temp
+from keyboards import show_main_menu, confirm_keyboard, get_main_menu
+from utils import send_and_track, notify_temp, check_membership
 from config import GROUP_CHAT_ID
 
 router = Router()
@@ -23,6 +23,9 @@ ORDERS_PER_PAGE = 5
 # Показать список заказов
 @router.callback_query(F.message.chat.type == "private", F.data == "delete")
 async def show_orders(call: CallbackQuery, state: FSMContext):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
+
     await state.clear()
     await state.update_data(offset=0)
     await display_orders(call, state, offset=0)
@@ -31,6 +34,8 @@ async def show_orders(call: CallbackQuery, state: FSMContext):
 # Кнопка "⏭ Далее"
 @router.callback_query(F.message.chat.type == "private", F.data == "next_page")
 async def next_page(call: CallbackQuery, state: FSMContext):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     data = await state.get_data()
     offset = data.get("offset", 0) + ORDERS_PER_PAGE
     await state.update_data(offset=offset)
@@ -40,11 +45,15 @@ async def next_page(call: CallbackQuery, state: FSMContext):
 # Кнопка "🔙 В начало"
 @router.callback_query(F.message.chat.type == "private", F.data == "reset_page")
 async def reset_page(call: CallbackQuery, state: FSMContext):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     await state.update_data(offset=0)
     await display_orders(call, state, offset=0)
 
 
 async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     """
     Показывает пагинированный список полных заказов (с позициями и суммами).
     """
@@ -52,8 +61,14 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
     page = orders[offset : offset + ORDERS_PER_PAGE]
 
     if not page:
+        # Показываем тост, потом просто редактируем текущее сообщение в главное меню,
+        # чтобы не накладывать вторую копию
         await notify_temp(call, "🔸 У вас пока нет заказов.")
-        await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+        # Импортируйте get_main_menu в начало модуля:
+        # from keyboards import get_main_menu
+        await call.message.edit_text(
+            "Напишите заказ и тип оплаты:", reply_markup=get_main_menu()
+        )
         return
 
     text_lines = []
@@ -101,6 +116,8 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
 # Удалить один заказ
 @router.callback_query(F.message.chat.type == "private", F.data.startswith("del_"))
 async def delete_one(call: CallbackQuery, state: FSMContext):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     order_id = int(call.data.split("_", 1)[1])
     username = call.from_user.username or ""
 
@@ -149,6 +166,8 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
 # Подтверждение очистки за сегодня
 @router.callback_query(F.message.chat.type == "private", F.data == "clear_today")
 async def confirm_clear_today(call: CallbackQuery):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     await call.answer()
     kb = confirm_keyboard("✅ Очистить", "confirm_clear", "cancel_delete")
     await call.message.edit_text(
@@ -160,6 +179,8 @@ async def confirm_clear_today(call: CallbackQuery):
 # Удалить за сегодня
 @router.callback_query(F.message.chat.type == "private", F.data == "confirm_clear")
 async def do_clear_today(call: CallbackQuery, state: FSMContext):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     await call.answer()
     today = datetime.now().date()
     orders = get_user_orders_with_items(call.from_user.id)
@@ -220,6 +241,8 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
 # Отмена
 @router.callback_query(F.message.chat.type == "private", F.data == "cancel_delete")
 async def cancel_delete(call: CallbackQuery, state: FSMContext):
+    if not await check_membership(call.bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     await state.clear()
     try:
         await call.message.delete()

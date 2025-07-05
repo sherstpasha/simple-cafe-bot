@@ -10,7 +10,7 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from reports import generate_reports
 from keyboards import show_main_menu
-from utils import user_last_bot_message
+from utils import user_last_bot_message, check_membership, notify_temp
 from datetime import datetime, timedelta
 
 router = Router()
@@ -18,6 +18,8 @@ router = Router()
 
 @router.callback_query(F.message.chat.type == "private", F.data == "report")
 async def choose_period(call: CallbackQuery, state: FSMContext, bot):
+    if not await check_membership(bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     await state.clear()
     last = user_last_bot_message.get(call.from_user.id)
     if last:
@@ -46,6 +48,8 @@ async def choose_period(call: CallbackQuery, state: FSMContext, bot):
     F.data.in_({"report_today", "report_yesterday", "report_all"}),
 )
 async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
+    if not await check_membership(bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     today = datetime.now().date()
     if call.data == "report_today":
         start, end = today, today
@@ -68,6 +72,8 @@ async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
 
 @router.callback_query(F.message.chat.type == "private", F.data == "cancel_report")
 async def cancel_report(call: CallbackQuery, state: FSMContext, bot):
+    if not await check_membership(bot, call.from_user.id):
+        return await notify_temp(call, "⛔ Доступ запрещён: вы не участник группы.")
     await state.clear()
     try:
         await call.message.delete()

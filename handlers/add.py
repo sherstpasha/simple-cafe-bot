@@ -6,7 +6,13 @@ import json, logging, sqlite3, asyncio
 
 from config import MENU_FILE, GROUP_CHAT_ID
 from llm_client import complete
-from utils import edit_or_send, transcribe_voice, notify_temp, send_and_track
+from utils import (
+    edit_or_send,
+    transcribe_voice,
+    notify_temp,
+    send_and_track,
+    check_membership,
+)
 from keyboards import show_main_menu, confirm_keyboard
 from db import add_order_items
 
@@ -23,6 +29,11 @@ ADDONS = MENU["addons"]
 @router.message(F.chat.type == "private", F.voice)
 @router.message(F.chat.type == "private", F.text & ~F.text.startswith("/"))
 async def handle_message(message: Message, state: FSMContext, bot):
+
+    user_id = message.from_user.id
+    if not await check_membership(bot, user_id):
+        return await notify_temp(message, "⛔ Доступ запрещён: вы не участник группы.")
+
     try:
         user_id = message.from_user.id
         chat_id = message.chat.id

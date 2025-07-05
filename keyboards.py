@@ -1,3 +1,5 @@
+# keyboard.py
+
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import send_and_track
@@ -27,4 +29,6 @@ def get_main_menu() -> InlineKeyboardMarkup:
 
 async def show_main_menu(user_id: int, chat_id: int, bot: Bot):
     kb = get_main_menu()
-    await send_and_track(bot, user_id, chat_id, "Выберите действие:", reply_markup=kb)
+    await send_and_track(
+        bot, user_id, chat_id, "Напишите заказ и тип оплаты:", reply_markup=kb
+    )
