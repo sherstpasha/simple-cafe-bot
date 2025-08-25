@@ -1,7 +1,6 @@
 import sqlite3
 from datetime import datetime, date
-import time
-
+import json as _json
 
 DB_PATH = "orders.db"
 
@@ -34,6 +33,8 @@ CREATE TABLE IF NOT EXISTS order_items (
     payment_type TEXT,
     price INTEGER,
     quantity INTEGER DEFAULT 1,
+    addons_total INTEGER DEFAULT 0,
+    addons_json  TEXT DEFAULT '[]',
     row_total INTEGER NOT NULL,
     FOREIGN KEY(order_id) REFERENCES orders(id)
 );
@@ -80,93 +81,75 @@ def log_action(action_type, payment_type, item_name, user_id, username):
         conn.close()
 
 
-def delete_order(order_id, user_id, username):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT payment_type, item_name FROM orders WHERE id=? AND user_id=?",
-        (order_id, user_id),
-    )
-    row = cursor.fetchone()
-    if row:
-        payment, item = row["payment_type"], row["item_name"]
-        cursor.execute(
-            "DELETE FROM orders WHERE id=? AND user_id=?", (order_id, user_id)
-        )
-        conn.commit()
-        log_action("удаление", payment, item, user_id, username)
-    conn.close()
+# def clear_today(user_id, username):
+#     conn = get_connection()
+#     cursor = conn.cursor()
+#     today = date.today().isoformat()
+#     cursor.execute(
+#         "SELECT id, payment_type, item_name FROM orders WHERE date(date)=date(?) AND user_id=?",
+#         (today, user_id),
+#     )
+#     rows = cursor.fetchall()
+#     for r in rows:
+#         cursor.execute("DELETE FROM orders WHERE id=?", (r["id"],))
+#         log_action(
+#             "очистка_сегодня", r["payment_type"], r["item_name"], user_id, username
+#         )
+#     conn.commit()
+#     conn.close()
 
 
-def clear_today(user_id, username):
-    conn = get_connection()
-    cursor = conn.cursor()
-    today = date.today().isoformat()
-    cursor.execute(
-        "SELECT id, payment_type, item_name FROM orders WHERE date(date)=date(?) AND user_id=?",
-        (today, user_id),
-    )
-    rows = cursor.fetchall()
-    for r in rows:
-        cursor.execute("DELETE FROM orders WHERE id=?", (r["id"],))
-        log_action(
-            "очистка_сегодня", r["payment_type"], r["item_name"], user_id, username
-        )
-    conn.commit()
-    conn.close()
+# def get_user_orders(user_id):
+#     conn = get_connection()
+#     cursor = conn.cursor()
+#     cursor.execute(
+#         "SELECT id, date, payment_type, item_name FROM orders WHERE user_id = ? ORDER BY date DESC",
+#         (user_id,),
+#     )
+#     rows = cursor.fetchall()
+#     conn.close()
+#     return [
+#         {"id": r[0], "date": r[1], "payment_type": r[2], "item_name": r[3]}
+#         for r in rows
+#     ]
 
 
-def get_user_orders(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, date, payment_type, item_name FROM orders WHERE user_id = ? ORDER BY date DESC",
-        (user_id,),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    return [
-        {"id": r[0], "date": r[1], "payment_type": r[2], "item_name": r[3]}
-        for r in rows
-    ]
+# def delete_order(order_id, user_id):
+#     conn = get_connection()
+#     cursor = conn.cursor()
+#     cursor.execute(
+#         "SELECT payment_type, item_name FROM orders WHERE id = ? AND user_id = ?",
+#         (order_id, user_id),
+#     )
+#     row = cursor.fetchone()
+#     if not row:
+#         conn.close()
+#         return None
+#     cursor.execute(
+#         "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
+#     )
+#     conn.commit()
+#     conn.close()
+#     return {"payment_type": row[0], "item_name": row[1]}
 
 
-def delete_order(order_id, user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT payment_type, item_name FROM orders WHERE id = ? AND user_id = ?",
-        (order_id, user_id),
-    )
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return None
-    cursor.execute(
-        "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
-    )
-    conn.commit()
-    conn.close()
-    return {"payment_type": row[0], "item_name": row[1]}
+# def delete_orders_today(user_id):
+#     from datetime import date
 
-
-def delete_orders_today(user_id):
-    from datetime import date
-
-    conn = get_connection()
-    cursor = conn.cursor()
-    today = date.today().isoformat()
-    cursor.execute(
-        "SELECT payment_type, item_name FROM orders WHERE user_id = ? AND date(date) = ?",
-        (user_id, today),
-    )
-    rows = cursor.fetchall()
-    cursor.execute(
-        "DELETE FROM orders WHERE user_id = ? AND date(date) = ?", (user_id, today)
-    )
-    conn.commit()
-    conn.close()
-    return len(rows), [{"payment_type": r[0], "item_name": r[1]} for r in rows]
+#     conn = get_connection()
+#     cursor = conn.cursor()
+#     today = date.today().isoformat()
+#     cursor.execute(
+#         "SELECT payment_type, item_name FROM orders WHERE user_id = ? AND date(date) = ?",
+#         (user_id, today),
+#     )
+#     rows = cursor.fetchall()
+#     cursor.execute(
+#         "DELETE FROM orders WHERE user_id = ? AND date(date) = ?", (user_id, today)
+#     )
+#     conn.commit()
+#     conn.close()
+#     return len(rows), [{"payment_type": r[0], "item_name": r[1]} for r in rows]
 
 
 def add_order_items(items: list[dict], user_id: int, username: str, raw_text: str = ""):
@@ -188,16 +171,24 @@ def add_order_items(items: list[dict], user_id: int, username: str, raw_text: st
     # 2) вставляем все позиции + одно лог-сообщение на каждую
     for item in items:
         qty = item.get("quantity", 1)
-        row_total = item["price"] * qty
+        base_price = int(item["price"])
+        addons = item.get("addons", [])
+        addons_total = sum(int(a.get("price", 0)) for a in addons)
+        row_total = (base_price + addons_total) * qty
+
+        addons_json = _json.dumps(addons, ensure_ascii=False)
+
         cursor.execute(
-            "INSERT INTO order_items (order_id, item_name, payment_type, price, quantity, row_total) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO order_items (order_id, item_name, payment_type, price, quantity, addons_total, addons_json, row_total) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 order_id,
                 item["item_name"],
                 item["payment_type"],
-                item["price"],
+                base_price,
                 qty,
+                addons_total,
+                addons_json,
                 row_total,
             ),
         )
@@ -256,21 +247,30 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
         cursor2 = conn.cursor()
         cursor2.execute(
             """
-            SELECT item_name, price, quantity, row_total
+            SELECT item_name, price, quantity, addons_total, addons_json, row_total
             FROM order_items
             WHERE order_id = ?
             """,
             (oid,),
         )
-        items = [
-            {
-                "item_name": r["item_name"],
-                "price": r["price"],
-                "quantity": r["quantity"],
-                "row_total": r["row_total"],
-            }
-            for r in cursor2.fetchall()
-        ]
+        rows = cursor2.fetchall()
+        items = []
+        for r in rows:
+            addons = []
+            try:
+                addons = _json.loads(r["addons_json"]) if r["addons_json"] else []
+            except Exception:
+                addons = []
+            items.append(
+                {
+                    "item_name": r["item_name"],
+                    "price": r["price"],  # базовая цена
+                    "quantity": r["quantity"],
+                    "addons_total": r["addons_total"],  # сумма добавок
+                    "addons": addons,  # список добавок [{name, price}, ...]
+                    "row_total": r["row_total"],  # ИТОГО по позиции (с добавками * qty)
+                }
+            )
         # Считаем суммарную стоимость заказа
         total = sum(r["row_total"] for r in items)
         orders.append(
@@ -294,11 +294,15 @@ def delete_entire_order(order_id: int, user_id: int, username: str) -> list[dict
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT item_name, price, quantity, payment_type FROM order_items WHERE order_id=?",
+        """
+        SELECT item_name, price, quantity, payment_type,
+               row_total, addons_total, addons_json
+        FROM order_items
+        WHERE order_id=?
+        """,
         (order_id,),
     )
     items = [dict(r) for r in cursor.fetchall()]
-
     cursor.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
     cursor.execute("DELETE FROM orders WHERE id=? AND user_id=?", (order_id, user_id))
     conn.commit()

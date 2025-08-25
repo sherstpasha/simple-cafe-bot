@@ -13,6 +13,8 @@ from db import (
 from keyboards import show_main_menu, confirm_keyboard, get_main_menu
 from utils import send_and_track, notify_temp, check_membership
 from config import GROUP_CHAT_ID
+import json as _json
+
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -131,10 +133,22 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
     except:
         pass
 
-    total = sum(it["price"] * it["quantity"] for it in items)
-    summary = "\n".join(
-        f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽" for it in items
-    )
+    total = sum(it.get("row_total", it["price"] * it["quantity"]) for it in items)
+
+    lines = []
+    for it in items:
+        line = f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽"
+        try:
+            addons = _json.loads(it.get("addons_json") or "[]")
+        except Exception:
+            addons = []
+        for a in addons:
+            lines.append(line)
+            line = None
+            lines.append(f"   • {a.get('name','')} — {int(a.get('price',0))}₽")
+        if line is not None:
+            lines.append(line)
+    summary = "\n".join(lines)
     user_text = f"❌ Заказ #{order_id} удалён:\n{summary}\n\n💰 Итого: {total}₽"
 
     # отправляем пользователю

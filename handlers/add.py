@@ -2,7 +2,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
-import json, logging, sqlite3, asyncio
+import json, logging, sqlite3, asyncio, re
 
 from config import MENU_FILE, GROUP_CHAT_ID
 from llm_client import complete
@@ -24,6 +24,83 @@ with open(MENU_FILE, encoding="utf-8") as f:
     MENU = json.load(f)
 MAIN_MENU = MENU["main"]
 ADDONS = MENU["addons"]
+
+
+def _extract_first_json(text: str) -> str:
+    """Возвращает сырой JSON-текст из ответа модели (без ```json ... ``` и лишнего текста)."""
+    if not isinstance(text, str):
+        raise ValueError("LLM reply is not a string")
+
+    # убрать BOM/пробелы
+    s = text.lstrip("\ufeff").strip()
+
+    # если пришло в ```json ... ```
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", s, flags=re.IGNORECASE)
+    if m:
+        s = m.group(1).strip()
+
+    # если уже «голый» JSON
+    if s and s[0] in "{[":
+        return _slice_balanced_json(s)
+
+    # иначе — ищем первый блок JSON где-то внутри текста
+    # находим первую { или [
+    brace_pos = min([p for p in (s.find("{"), s.find("[")) if p != -1], default=-1)
+    if brace_pos == -1:
+        raise ValueError("JSON block not found in model reply")
+
+    return _slice_balanced_json(s[brace_pos:])
+
+
+def _slice_balanced_json(s: str) -> str:
+    """Обрезает строку до первого сбалансированного JSON-объекта/массива (учитывая строки и экранирование)."""
+    if not s:
+        raise ValueError("Empty string passed for JSON slicing")
+
+    open_ch = s[0]
+    if open_ch not in "{[":
+        raise ValueError("JSON must start with { or [")
+    close_ch = "}" if open_ch == "{" else "]"
+
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return s[: i + 1]
+    raise ValueError("Unbalanced JSON in model reply")
+
+
+def extract_json_obj(text: str) -> dict:
+    raw = _extract_first_json(text)
+    return json.loads(raw)
+
+
+def parse_pay_field(v) -> int:
+    """Пытаемся аккуратно привести pay к -1/0/1."""
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, str):
+        s = v.lower()
+        if any(k in s for k in ("безнал", "карта", "перевод", "терминал", "qr")):
+            return 1
+        if "нал" in s:
+            return 0
+    return -1
 
 
 @router.message(F.chat.type == "private", F.voice)
@@ -130,10 +207,11 @@ async def handle_message(message: Message, state: FSMContext, bot):
 
         # парсим ответ
         try:
-            result = json.loads(reply)
+            result = extract_json_obj(reply)
             raw_items = result.get("it", [])
-            pay_code = int(result.get("pay", -1))
-        except json.JSONDecodeError:
+            pay_code = parse_pay_field(result.get("pay", -1))
+        except Exception:
+            logger.exception("Failed to parse model JSON")
             return await notify_temp(message, "⚠️ Не удалось распознать ответ модели.")
 
         # сопоставление pay
