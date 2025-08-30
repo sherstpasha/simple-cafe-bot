@@ -2,10 +2,10 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
-import json, logging, sqlite3, asyncio, re
+import json, logging, sqlite3, asyncio
 
 from config import MENU_FILE, GROUP_CHAT_ID
-from llm_client import complete
+from llm_client import parse_order_from_text, LLMParseError
 from utils import (
     edit_or_send,
     transcribe_voice,
@@ -24,83 +24,6 @@ with open(MENU_FILE, encoding="utf-8") as f:
     MENU = json.load(f)
 MAIN_MENU = MENU["main"]
 ADDONS = MENU["addons"]
-
-
-def _extract_first_json(text: str) -> str:
-    """Возвращает сырой JSON-текст из ответа модели (без ```json ... ``` и лишнего текста)."""
-    if not isinstance(text, str):
-        raise ValueError("LLM reply is not a string")
-
-    # убрать BOM/пробелы
-    s = text.lstrip("\ufeff").strip()
-
-    # если пришло в ```json ... ```
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", s, flags=re.IGNORECASE)
-    if m:
-        s = m.group(1).strip()
-
-    # если уже «голый» JSON
-    if s and s[0] in "{[":
-        return _slice_balanced_json(s)
-
-    # иначе — ищем первый блок JSON где-то внутри текста
-    # находим первую { или [
-    brace_pos = min([p for p in (s.find("{"), s.find("[")) if p != -1], default=-1)
-    if brace_pos == -1:
-        raise ValueError("JSON block not found in model reply")
-
-    return _slice_balanced_json(s[brace_pos:])
-
-
-def _slice_balanced_json(s: str) -> str:
-    """Обрезает строку до первого сбалансированного JSON-объекта/массива (учитывая строки и экранирование)."""
-    if not s:
-        raise ValueError("Empty string passed for JSON slicing")
-
-    open_ch = s[0]
-    if open_ch not in "{[":
-        raise ValueError("JSON must start with { or [")
-    close_ch = "}" if open_ch == "{" else "]"
-
-    depth = 0
-    in_str = False
-    esc = False
-    for i, ch in enumerate(s):
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == open_ch:
-                depth += 1
-            elif ch == close_ch:
-                depth -= 1
-                if depth == 0:
-                    return s[: i + 1]
-    raise ValueError("Unbalanced JSON in model reply")
-
-
-def extract_json_obj(text: str) -> dict:
-    raw = _extract_first_json(text)
-    return json.loads(raw)
-
-
-def parse_pay_field(v) -> int:
-    """Пытаемся аккуратно привести pay к -1/0/1."""
-    if isinstance(v, (int, float)):
-        return int(v)
-    if isinstance(v, str):
-        s = v.lower()
-        if any(k in s for k in ("безнал", "карта", "перевод", "терминал", "qr")):
-            return 1
-        if "нал" in s:
-            return 0
-    return -1
 
 
 @router.message(F.chat.type == "private", F.voice)
@@ -129,115 +52,60 @@ async def handle_message(message: Message, state: FSMContext, bot):
                     message, "🗣 Не получилось распознать речь, попробуйте ещё раз."
                 )
         else:
-            user_text = message.text.strip()
+            user_text = (message.text or "").strip()
+
+        if not user_text:
+            return await notify_temp(message, "⚠️ Пустой запрос.")
 
         # сохраняем исходный текст для БД и подтверждения
         await state.update_data(raw_text=user_text)
         logger.info(f"[User Input]: {user_text}")
 
-        # готовим меню для промпта
-        main_text = "\n".join(f"- {k}" for k in MAIN_MENU)
-        addon_text = "\n".join(f"- {k}" for k in ADDONS)
-
-        # собираем инструкцию без f-строки, чтобы не экранировать JSON-примеры
-        system_instructions = (
-            "Ты — помощник для разбора заказа из текста.\n\n"
-            "Вот актуальное меню с ценами:\n"
-            "Основные позиции:\n" + main_text + "\n\nДобавки:\n" + addon_text + "\n\n"
-            "Твоя задача:\n"
-            '– Определи список заказанных позиций (it), основываясь **только** на "Основных позициях".\n'
-            "– К каждой позиции укажи:\n"
-            "  • n — item_name строго из основного меню\n"
-            "  • q — quantity (целое, default=1)\n"
-            "  • a — список addons (имя и цена из ADDONS, иначе price=0)\n"
-            "– Определи pay:\n"
-            "  • 1 — Безналичный\n"
-            "  • 0 — Наличный\n"
-            "  • -1 — не указано\n\n"
-            "**Важно**:\n"
-            '– В n только точное совпадение из "Основных позиций".\n'
-            "– В a только названия из раздела добавок или новые (free).\n\n"
-            "Формат ответа — только JSON-объект с:\n"
-            '- "it": [...]\n'
-            '- "pay": number\n\n'
-            "Примеры:\n\n"
-            '- Запрос: "2 американо наличкой"\n'
-            "{\n"
-            '  "it":[\n'
-            '    {"n":"Американо","q":2,"a":[]}\n'
-            "  ],\n"
-            '  "pay":0\n'
-            "}\n\n"
-            '- Запрос: "латте с шоколадным сиропом и капучино с фисташковым сиропом на карту"\n'
-            "{\n"
-            '  "it":[\n'
-            '    {"n":"Латте","q":1,"a":["Шоколадный сироп"]},\n'
-            '    {"n":"Капучино","q":1,"a":["Фисташковый сироп"]}\n'
-            "  ],\n"
-            '  "pay":1\n'
-            "}\n\n"
-            '- Запрос: "чай с грушей ромашковый и ройбуш на кокосовом молоке перевод"\n'
-            "{\n"
-            '  "it":[\n'
-            '    {"n":"Чай: Ромашковый с грушей","q":1,"a":[]},\n'
-            '    {"n":"Чай: Ройбуш Самурай","q":1,"a":["Альтернативное молоко (миндаль/кокос)"]}\n'
-            "  ],\n"
-            '  "pay":1\n'
-            "}\n\n"
-            '- Запрос: "макарон, чизкейк и какао с карамелью оплата наличными"\n'
-            "{\n"
-            '  "it":[\n'
-            '    {"n":"Десерты: Макарон","q":1,"a":[]},\n'
-            '    {"n":"Десерты: Чизкейк","q":1,"a":[]},\n'
-            '    {"n":"Какао: Классический","q":1,"a":["Карамельный сироп"]}\n'
-            "  ],\n"
-            '  "pay":0\n'
-            "}\n\n"
-            "Никакого другого текста — только JSON."
-        )
-
-        prompt_messages = [
-            {"role": "system", "content": system_instructions},
-            {"role": "user", "content": user_text},
-        ]
-        logger.debug(prompt_messages)
-
-        reply = await complete(prompt_messages)
-        logger.info(f"[LLM reply]: {reply}")
-
-        # парсим ответ
+        # === единый вызов в llm_client: промпт лежит там ===
         try:
-            result = extract_json_obj(reply)
-            raw_items = result.get("it", [])
-            pay_code = parse_pay_field(result.get("pay", -1))
-        except Exception:
+            parsed = await parse_order_from_text(user_text, MENU, temperature=0.2)
+        except LLMParseError:
             logger.exception("Failed to parse model JSON")
             return await notify_temp(message, "⚠️ Не удалось распознать ответ модели.")
+        except Exception:
+            logger.exception("LLM call failed")
+            return await notify_temp(message, "⚠️ Ошибка при обращении к модели.")
+
+        raw_items = parsed.get("it", [])
+        pay_code = parsed.get("pay", -1)
 
         # сопоставление pay
-        pay_text = ""
         if pay_code == 0:
             pay_text = "Наличный"
         elif pay_code == 1:
             pay_text = "Безналичный"
-        # если способ оплаты не распознан, ставим метку "Не указано"
-        if not pay_text:
+        else:
             pay_text = "Не указано"
 
         # нормализация
         normalized = []
         for entry in raw_items:
-            name = entry.get("n", "").strip()
+            name = (entry.get("n") or entry.get("name") or "").strip()
             if name not in MAIN_MENU:
                 logger.warning(f"Пропущено: '{name}'")
                 continue
-            qty = int(entry.get("q", 1))
+
+            try:
+                qty = int(entry.get("q", 1))
+            except Exception:
+                qty = 1
+            qty = max(1, qty)
+
             addons_raw = entry.get("a", [])
             addons_info = []
             for addon in addons_raw:
-                ad = addon.strip()
+                ad = str(addon).strip()
+                if not ad:
+                    continue
                 addons_info.append({"name": ad, "price": ADDONS.get(ad, 0)})
+
             price = MAIN_MENU[name]
+            # текущая логика — «размножаем» по количеству (quantity=1 в каждой строке)
             for _ in range(qty):
                 normalized.append(
                     {
@@ -248,6 +116,7 @@ async def handle_message(message: Message, state: FSMContext, bot):
                         "payment_type": pay_text,
                     }
                 )
+
         if not normalized:
             return await notify_temp(message, "⚠️ Ни одна позиция не найдена в меню.")
 

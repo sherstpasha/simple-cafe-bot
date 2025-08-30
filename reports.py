@@ -32,11 +32,12 @@ def generate_reports(start_date=None, end_date=None):
         date_filter = "WHERE date(o.date) BETWEEN ? AND ?"
         params = [start_date.isoformat(), end_date.isoformat()]
 
-    # 2) Читаем данные, включая addons_json и raw_text
+    # 2) Читаем данные (теперь добавили o.username)
     orders_df = pd.read_sql_query(
         f"""
         SELECT 
           o.date          AS date,
+          o.username      AS username,
           i.payment_type  AS payment_type,
           i.item_name     AS item_name,
           i.price         AS base_price,
@@ -59,7 +60,7 @@ def generate_reports(start_date=None, end_date=None):
     )
     conn.close()
 
-    # 3) Преобразуем addons_json -> «Добавки» (читабельный текст)
+    # 3) addons_json -> «Добавки» (читабельный текст)
     def _fmt_addons(raw):
         try:
             arr = json.loads(raw) if raw else []
@@ -74,9 +75,10 @@ def generate_reports(start_date=None, end_date=None):
     else:
         orders_df["addons_text"] = pd.Series(dtype=str)
 
-    # 4) Переименовываем и упорядочиваем колонки (это и есть «пункты 2 и 3»)
+    # 4) Переименовываем и задаём порядок (добавили «Автор»)
     rename_map = {
         "date": "Дата",
+        "username": "Автор",
         "payment_type": "Тип оплаты",
         "item_name": "Название",
         "base_price": "Базовая цена",
@@ -87,9 +89,9 @@ def generate_reports(start_date=None, end_date=None):
     }
     orders_df = orders_df.rename(columns=rename_map)
 
-    # Желаемый порядок
     desired_cols = [
         "Дата",
+        "Автор",
         "Тип оплаты",
         "Название",
         "Базовая цена",
@@ -98,11 +100,10 @@ def generate_reports(start_date=None, end_date=None):
         "Сумма позиции",
         "Запрос",
     ]
-    # На случай, если где-то колонка отсутствует
     existing_cols = [c for c in desired_cols if c in orders_df.columns]
     orders_df = orders_df[existing_cols]
 
-    # Заголовки для лога действий
+    # Заголовки для лога действий (как и раньше)
     actions_df.columns = [
         "Дата/время",
         "Действие",
@@ -138,6 +139,7 @@ def generate_reports(start_date=None, end_date=None):
                         [
                             {
                                 "Дата": "",
+                                "Автор": "",
                                 "Тип оплаты": "",
                                 "Название": "ИТОГО",
                                 "Базовая цена": "",
@@ -175,6 +177,7 @@ def generate_reports(start_date=None, end_date=None):
                                 [
                                     {
                                         "Дата": "",
+                                        "Автор": "",
                                         "Тип оплаты": sheet,
                                         "Название": "ИТОГО",
                                         "Базовая цена": "",
@@ -188,10 +191,9 @@ def generate_reports(start_date=None, end_date=None):
                         ],
                         ignore_index=True,
                     )
-
                 df_pt.to_excel(writer, sheet_name=sheet, index=False)
 
-        # Группировка по (Тип оплаты, Название) + общий итог по сумме
+        # Группировка по (Тип оплаты, Название) + общий итог
         if not orders_df.empty:
             grouped = (
                 orders_df.groupby(["Тип оплаты", "Название"], dropna=False)
@@ -222,7 +224,20 @@ def generate_reports(start_date=None, end_date=None):
 
         grouped.to_excel(writer, sheet_name="Группировка", index=False)
 
-    # 7) Лог действий в отдельный файл
+        # (Опционально) отдельный срез по авторам: сумма и кол-во
+        if not orders_df.empty and "Автор" in orders_df:
+            by_author = (
+                orders_df.groupby(["Автор"], dropna=False)
+                .agg(
+                    Количество=("Сумма позиции", "size"),
+                    Общая_сумма=("Сумма позиции", "sum"),
+                )
+                .reset_index()
+                .sort_values(["Общая_сумма"], ascending=False)
+            )
+            by_author.to_excel(writer, sheet_name="По авторам", index=False)
+
+    # 7) Лог действий
     with pd.ExcelWriter(log_path, engine="openpyxl") as writer:
         actions_df.to_excel(writer, sheet_name="Журнал действий", index=False)
 
