@@ -203,6 +203,51 @@ def _build_messages_with_exact_prompt(user_text: str, menu: dict) -> list[dict]:
     ]
 
 
+_LATIN_TO_CYR = {
+    "A": "А",
+    "a": "а",
+    "B": "В",  # только верхний регистр безопасно
+    "E": "Е",
+    "e": "е",
+    "K": "К",
+    "k": "к",
+    "M": "М",
+    "m": "м",
+    "H": "Н",  # верхний регистр; нижний 'h' не трогаем
+    "O": "О",
+    "o": "о",
+    "P": "Р",
+    "p": "р",
+    "C": "С",
+    "c": "с",
+    "T": "Т",
+    "t": "т",
+    "X": "Х",
+    "x": "х",
+    "Y": "У",
+    "y": "у",
+}
+
+
+def _normalize_homoglyphs_value(s: str) -> str:
+    """Заменяет латинские символы-двойники на кириллицу в одной строке."""
+    return "".join(_LATIN_TO_CYR.get(ch, ch) for ch in s)
+
+
+def _normalize_values_only(obj):
+    """
+    Рекурсивно проходит по структуре и нормализует ТОЛЬКО значения-строки.
+    Ключи словарей не меняем.
+    """
+    if isinstance(obj, dict):
+        return {k: _normalize_values_only(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_values_only(v) for v in obj]
+    if isinstance(obj, str):
+        return _normalize_homoglyphs_value(obj)
+    return obj
+
+
 async def parse_order_from_text(
     user_text: str, menu: dict, *, temperature: float = 0.0
 ) -> dict:
@@ -212,8 +257,10 @@ async def parse_order_from_text(
     reply = await complete(messages, temperature=temperature)
     logger.info(f"[LLM reply]: {reply}")
 
-    # БЕЗ усложнений: просто парсим и даём ошибке всплыть, предварительно напечатав «сломанный» JSON.
+    # Парсим и нормализуем латиницу в значениях
     result = _extract_json_obj(reply)
+    result = _normalize_values_only(result)  # ← ВАЖНО: нормализация значений
+
     raw_items = result.get("it", [])
     try:
         pay_code = int(result.get("pay", -1))
