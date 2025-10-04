@@ -1,4 +1,5 @@
 import os
+import shutil
 import logging
 from aiogram.types import InlineKeyboardMarkup
 from aiogram import Bot
@@ -16,9 +17,46 @@ from config import GROUP_CHAT_ID, BOT_OWNER_ID
 user_last_bot_message = {}
 
 # Настройка путей к ffmpeg
-os.environ["PATH"] += os.pathsep + FFMPEG_PATH
-AudioSegment.converter = os.path.join(FFMPEG_PATH, "ffmpeg.exe")
-AudioSegment.ffprobe = os.path.join(FFMPEG_PATH, "ffprobe.exe")
+def _resolve_ffmpeg_binary(binary_name: str) -> str | None:
+    """Возвращает путь к бинарю ffmpeg/ffprobe, если удаётся найти."""
+
+    candidates: list[str] = []
+
+    explicit = (FFMPEG_PATH or "").strip()
+    if explicit:
+        if os.path.isdir(explicit):
+            candidates.append(os.path.join(explicit, binary_name))
+            candidates.append(os.path.join(explicit, f"{binary_name}.exe"))
+        else:
+            candidates.append(explicit)
+
+    resolved = shutil.which(binary_name)
+    if resolved:
+        candidates.append(resolved)
+
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+
+    return None
+
+
+def _configure_pydub_backends():
+    converter = _resolve_ffmpeg_binary("ffmpeg")
+    if converter:
+        AudioSegment.converter = converter
+    else:
+        logger.warning(
+            "FFmpeg binary not found. Install ffmpeg and ensure it is available in PATH, "
+            "или задайте FFMPEG_PATH."
+        )
+
+    ffprobe = _resolve_ffmpeg_binary("ffprobe")
+    if ffprobe:
+        AudioSegment.ffprobe = ffprobe
+
+
+_configure_pydub_backends()
 
 logger = logging.getLogger(__name__)
 

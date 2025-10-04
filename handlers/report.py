@@ -63,9 +63,11 @@ async def generate_selected_report(call: CallbackQuery, state: FSMContext, bot):
     except:
         pass
 
-    report_path, log_path = generate_reports(start, end)
+    report_path, staff_report_path, log_path = generate_reports(start, end)
 
     await call.message.answer_document(FSInputFile(report_path))
+    if staff_report_path:
+        await call.message.answer_document(FSInputFile(staff_report_path))
     await call.message.answer_document(FSInputFile(log_path))
     await show_main_menu(call.from_user.id, call.message.chat.id, bot)
 

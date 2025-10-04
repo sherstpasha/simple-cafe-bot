@@ -19,3 +19,6 @@ async def on_bot_added(update: ChatMemberUpdated):
         logger.info(
             f"✅ Бот добавлен в чат «{chat.title or chat.id}», chat_id = {chat.id}"
         )
+        print(
+            f"Bot added to chat '{chat.title or chat.id}' (id={chat.id}, type={chat.type})"
+        )

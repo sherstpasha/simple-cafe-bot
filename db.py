@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS orders (
     date TEXT,
     user_id INTEGER,
     username TEXT,
-    raw_text TEXT
+    raw_text TEXT,
+    is_staff INTEGER DEFAULT 0
 );
 """
 CREATE_LOG = """
@@ -21,7 +22,8 @@ CREATE TABLE IF NOT EXISTS actions_log (
     payment_type TEXT,
     item_name TEXT,
     user_id INTEGER,
-    username TEXT
+    username TEXT,
+    is_staff INTEGER DEFAULT 0
 );
 """
 
@@ -36,9 +38,19 @@ CREATE TABLE IF NOT EXISTS order_items (
     addons_total INTEGER DEFAULT 0,
     addons_json  TEXT DEFAULT '[]',
     row_total INTEGER NOT NULL,
+    is_staff INTEGER DEFAULT 0,
     FOREIGN KEY(order_id) REFERENCES orders(id)
 );
 """
+
+
+def _ensure_column(cursor, table: str, column_def: str):
+    try:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            return
+        raise
 
 
 def get_connection():
@@ -52,20 +64,25 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute(CREATE_ORDERS)
     cursor.execute(CREATE_LOG)
-    cursor.execute(CREATE_ORDER_ITEMS)  # <-- добавлено
+    cursor.execute(CREATE_ORDER_ITEMS)
+
+    _ensure_column(cursor, "orders", "is_staff INTEGER DEFAULT 0")
+    _ensure_column(cursor, "order_items", "is_staff INTEGER DEFAULT 0")
+    _ensure_column(cursor, "actions_log", "is_staff INTEGER DEFAULT 0")
+
     conn.commit()
     conn.close()
 
 
-def log_action(action_type, payment_type, item_name, user_id, username):
+def log_action(action_type, payment_type, item_name, user_id, username, *, is_staff=False):
     conn = get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO actions_log
-              (timestamp, action_type, payment_type, item_name, user_id, username)
-            VALUES (?, ?, ?, ?, ?, ?)
+              (timestamp, action_type, payment_type, item_name, user_id, username, is_staff)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now().isoformat(),
@@ -74,6 +91,7 @@ def log_action(action_type, payment_type, item_name, user_id, username):
                 item_name,
                 user_id,
                 username,
+                1 if is_staff else 0,
             ),
         )
         conn.commit()
@@ -152,7 +170,14 @@ def log_action(action_type, payment_type, item_name, user_id, username):
 #     return len(rows), [{"payment_type": r[0], "item_name": r[1]} for r in rows]
 
 
-def add_order_items(items: list[dict], user_id: int, username: str, raw_text: str = ""):
+def add_order_items(
+    items: list[dict],
+    user_id: int,
+    username: str,
+    raw_text: str = "",
+    *,
+    is_staff: bool = False,
+):
     """
     Записывает в БД сам заказ и сразу все позиции + логи в одном соединении.
     """
@@ -161,8 +186,8 @@ def add_order_items(items: list[dict], user_id: int, username: str, raw_text: st
 
     # 1) создаём новую запись в orders
     cursor.execute(
-        "INSERT INTO orders (date, user_id, username, raw_text) VALUES (?, ?, ?, ?)",
-        (datetime.now().isoformat(), user_id, username, raw_text),
+        "INSERT INTO orders (date, user_id, username, raw_text, is_staff) VALUES (?, ?, ?, ?, ?)",
+        (datetime.now().isoformat(), user_id, username, raw_text, 1 if is_staff else 0),
     )
 
     order_id = cursor.lastrowid
@@ -179,8 +204,8 @@ def add_order_items(items: list[dict], user_id: int, username: str, raw_text: st
         addons_json = _json.dumps(addons, ensure_ascii=False)
 
         cursor.execute(
-            "INSERT INTO order_items (order_id, item_name, payment_type, price, quantity, addons_total, addons_json, row_total) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO order_items (order_id, item_name, payment_type, price, quantity, addons_total, addons_json, row_total, is_staff) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 order_id,
                 item["item_name"],
@@ -190,11 +215,12 @@ def add_order_items(items: list[dict], user_id: int, username: str, raw_text: st
                 addons_total,
                 addons_json,
                 row_total,
+                1 if is_staff else 0,
             ),
         )
         cursor.execute(
-            "INSERT INTO actions_log (timestamp, action_type, payment_type, item_name, user_id, username) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO actions_log (timestamp, action_type, payment_type, item_name, user_id, username, is_staff) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 now,
                 "добавление",
@@ -202,6 +228,7 @@ def add_order_items(items: list[dict], user_id: int, username: str, raw_text: st
                 item["item_name"],
                 user_id,
                 username,
+                1 if is_staff else 0,
             ),
         )
 
@@ -233,7 +260,7 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
     # Сначала пробегаемся по уникальным заказам
     cursor.execute(
         """
-        SELECT DISTINCT o.id, o.date, oi.payment_type
+        SELECT DISTINCT o.id, o.date, o.is_staff, oi.payment_type
         FROM orders o
         JOIN order_items oi ON oi.order_id = o.id
         WHERE o.user_id = ?
@@ -242,12 +269,12 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
         (user_id,),
     )
     orders = []
-    for oid, date_, payment in cursor.fetchall():
+    for oid, date_, is_staff, payment in cursor.fetchall():
         # Для каждого заказа собираем позиции
         cursor2 = conn.cursor()
         cursor2.execute(
             """
-            SELECT item_name, price, quantity, addons_total, addons_json, row_total
+            SELECT item_name, price, quantity, addons_total, addons_json, row_total, is_staff
             FROM order_items
             WHERE order_id = ?
             """,
@@ -269,6 +296,7 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
                     "addons_total": r["addons_total"],  # сумма добавок
                     "addons": addons,  # список добавок [{name, price}, ...]
                     "row_total": r["row_total"],  # ИТОГО по позиции (с добавками * qty)
+                    "is_staff": bool(r["is_staff"]),
                 }
             )
         # Считаем суммарную стоимость заказа
@@ -280,6 +308,7 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
                 "payment_type": payment,
                 "items": items,
                 "total": total,
+                "is_staff": bool(is_staff),
             }
         )
     conn.close()
@@ -296,7 +325,7 @@ def delete_entire_order(order_id: int, user_id: int, username: str) -> list[dict
     cursor.execute(
         """
         SELECT item_name, price, quantity, payment_type,
-               row_total, addons_total, addons_json
+               row_total, addons_total, addons_json, is_staff
         FROM order_items
         WHERE order_id=?
         """,
@@ -316,5 +345,6 @@ def delete_entire_order(order_id: int, user_id: int, username: str) -> list[dict
             item_name=f"{it['item_name']} x{it['quantity']}",
             user_id=user_id,
             username=username,
+            is_staff=bool(it.get("is_staff")),
         )
     return items

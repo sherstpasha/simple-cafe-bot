@@ -32,12 +32,13 @@ def generate_reports(start_date=None, end_date=None):
         date_filter = "WHERE date(o.date) BETWEEN ? AND ?"
         params = [start_date.isoformat(), end_date.isoformat()]
 
-    # 2) Читаем данные (теперь добавили o.username)
+    # 2) Читаем данные, включая признак сотрудника
     orders_df = pd.read_sql_query(
         f"""
         SELECT 
           o.date          AS date,
           o.username      AS username,
+          o.is_staff      AS is_staff,
           i.payment_type  AS payment_type,
           i.item_name     AS item_name,
           i.price         AS base_price,
@@ -55,12 +56,16 @@ def generate_reports(start_date=None, end_date=None):
     )
 
     actions_df = pd.read_sql_query(
-        "SELECT timestamp, action_type, payment_type, item_name, user_id, username FROM actions_log",
+        "SELECT timestamp, action_type, payment_type, item_name, user_id, username, is_staff FROM actions_log",
         conn,
     )
     conn.close()
 
-    # 3) addons_json -> «Добавки» (читабельный текст)
+    if orders_df.empty:
+        orders_df["is_staff"] = pd.Series(dtype=int)
+    else:
+        orders_df["is_staff"] = orders_df["is_staff"].fillna(0).astype(int)
+
     def _fmt_addons(raw):
         try:
             arr = json.loads(raw) if raw else []
@@ -70,111 +75,102 @@ def generate_reports(start_date=None, end_date=None):
             return ""
         return ", ".join(f"{a.get('name','')} ({int(a.get('price',0))}₽)" for a in arr)
 
-    if not orders_df.empty:
-        orders_df["addons_text"] = orders_df["addons_json"].apply(_fmt_addons)
-    else:
-        orders_df["addons_text"] = pd.Series(dtype=str)
-
-    # 4) Переименовываем и задаём порядок (добавили «Автор»)
-    rename_map = {
-        "date": "Дата",
-        "username": "Автор",
-        "payment_type": "Тип оплаты",
-        "item_name": "Название",
-        "base_price": "Базовая цена",
-        "addons_text": "Добавки",
-        "addons_total": "Сумма добавок",
-        "row_total": "Сумма позиции",
-        "raw_text": "Запрос",
-    }
-    orders_df = orders_df.rename(columns=rename_map)
-
-    desired_cols = [
-        "Дата",
-        "Автор",
-        "Тип оплаты",
-        "Название",
-        "Базовая цена",
-        "Добавки",
-        "Сумма добавок",
-        "Сумма позиции",
-        "Запрос",
-    ]
-    existing_cols = [c for c in desired_cols if c in orders_df.columns]
-    orders_df = orders_df[existing_cols]
-
-    # Заголовки для лога действий (как и раньше)
-    actions_df.columns = [
-        "Дата/время",
-        "Действие",
-        "Тип оплаты",
-        "Название",
-        "user_id",
-        "username",
-    ]
-
-    # 5) Имена файлов
-    if start_date and end_date:
-        period_str = (
-            start_date.isoformat()
-            if start_date == end_date
-            else f"{start_date.isoformat()}__{end_date.isoformat()}"
-        )
-    else:
-        period_str = "all"
-
-    report_path = f"report_{period_str}.xlsx"
-    log_path = f"log_report_{period_str}.xlsx"
-
-    # 6) Пишем отчёт с итогами
-    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
-        # «Все позиции» + ИТОГО
-        df_all = orders_df.copy()
-        total_all = df_all["Сумма позиции"].sum() if "Сумма позиции" in df_all else 0
-        if not df_all.empty:
-            df_all = pd.concat(
-                [
-                    df_all,
-                    pd.DataFrame(
-                        [
-                            {
-                                "Дата": "",
-                                "Автор": "",
-                                "Тип оплаты": "",
-                                "Название": "ИТОГО",
-                                "Базовая цена": "",
-                                "Добавки": "",
-                                "Сумма добавок": "",
-                                "Сумма позиции": total_all,
-                                "Запрос": "",
-                            }
-                        ]
-                    ),
-                ],
-                ignore_index=True,
+    def _prepare_orders_df(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return pd.DataFrame(
+                columns=[
+                    "Дата",
+                    "Автор",
+                    "Тип оплаты",
+                    "Название",
+                    "Базовая цена",
+                    "Добавки",
+                    "Сумма добавок",
+                    "Сумма позиции",
+                    "Запрос",
+                    "Сотрудник",
+                ]
             )
-        df_all.to_excel(writer, sheet_name="Все позиции", index=False)
 
-        # Листы по каждому типу оплаты + ИТОГО
-        if not orders_df.empty and "Тип оплаты" in orders_df:
-            for pt in sorted(
-                orders_df["Тип оплаты"].dropna().unique(), key=lambda s: str(s).lower()
-            ):
-                mask = (
-                    orders_df["Тип оплаты"].astype(str).str.lower() == str(pt).lower()
-                )
-                df_pt = orders_df[mask].copy()
-                sheet = str(pt).capitalize()
+        df = df.copy()
+        df["addons_text"] = df["addons_json"].apply(_fmt_addons)
+        rename_map = {
+            "date": "Дата",
+            "username": "Автор",
+            "payment_type": "Тип оплаты",
+            "item_name": "Название",
+            "base_price": "Базовая цена",
+            "addons_text": "Добавки",
+            "addons_total": "Сумма добавок",
+            "row_total": "Сумма позиции",
+            "raw_text": "Запрос",
+            "is_staff": "Сотрудник",
+        }
+        df = df.rename(columns=rename_map)
+        desired_cols = [
+            "Дата",
+            "Автор",
+            "Тип оплаты",
+            "Название",
+            "Базовая цена",
+            "Добавки",
+            "Сумма добавок",
+            "Сумма позиции",
+            "Запрос",
+            "Сотрудник",
+        ]
+        existing_cols = [c for c in desired_cols if c in df.columns]
+        return df[existing_cols]
 
-                total_pt = (
-                    df_pt["Сумма позиции"].sum() if "Сумма позиции" in df_pt else 0
+    def _write_report(df_prepared: pd.DataFrame, path: str):
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            df_all = df_prepared.copy()
+            total_all = df_all["Сумма позиции"].sum() if "Сумма позиции" in df_all else 0
+            if not df_all.empty:
+                df_all = pd.concat(
+                    [
+                        df_all,
+                        pd.DataFrame(
+                            [
+                                {
+                                    "Дата": "",
+                                    "Автор": "",
+                                    "Тип оплаты": "",
+                                    "Название": "ИТОГО",
+                                    "Базовая цена": "",
+                                    "Добавки": "",
+                                    "Сумма добавок": "",
+                                    "Сумма позиции": total_all,
+                                    "Запрос": "",
+                                    "Сотрудник": "",
+                                }
+                            ]
+                        ),
+                    ],
+                    ignore_index=True,
                 )
-                if not df_pt.empty:
-                    df_pt = pd.concat(
-                        [
-                            df_pt,
-                            pd.DataFrame(
-                                [
+            df_all.to_excel(writer, sheet_name="Все позиции", index=False)
+
+            if not df_prepared.empty and "Тип оплаты" in df_prepared:
+                for pt in sorted(
+                    df_prepared["Тип оплаты"].dropna().unique(), key=lambda s: str(s).lower()
+                ):
+                    mask = (
+                        df_prepared["Тип оплаты"].astype(str).str.lower()
+                        == str(pt).lower()
+                    )
+                    df_pt = df_prepared[mask].copy()
+                    sheet = str(pt).capitalize()
+
+                    total_pt = (
+                        df_pt["Сумма позиции"].sum() if "Сумма позиции" in df_pt else 0
+                    )
+                    if not df_pt.empty:
+                        df_pt = pd.concat(
+                            [
+                                df_pt,
+                                pd.DataFrame(
+                                    [
                                     {
                                         "Дата": "",
                                         "Автор": "",
@@ -185,64 +181,99 @@ def generate_reports(start_date=None, end_date=None):
                                         "Сумма добавок": "",
                                         "Сумма позиции": total_pt,
                                         "Запрос": "",
+                                        "Сотрудник": "",
                                     }
                                 ]
                             ),
                         ],
                         ignore_index=True,
+                        )
+                    df_pt.to_excel(writer, sheet_name=sheet, index=False)
+
+            if not df_prepared.empty:
+                grouped = (
+                    df_prepared.groupby(["Тип оплаты", "Название"], dropna=False)
+                    .agg(
+                        Количество=("Сумма позиции", "size"),
+                        Общая_сумма=("Сумма позиции", "sum"),
                     )
-                df_pt.to_excel(writer, sheet_name=sheet, index=False)
-
-        # Группировка по (Тип оплаты, Название) + общий итог
-        if not orders_df.empty:
-            grouped = (
-                orders_df.groupby(["Тип оплаты", "Название"], dropna=False)
-                .agg(
-                    Количество=("Сумма позиции", "size"),
-                    Общая_сумма=("Сумма позиции", "sum"),
+                    .reset_index()
                 )
-                .reset_index()
-            )
-        else:
-            grouped = pd.DataFrame(
-                columns=["Тип оплаты", "Название", "Количество", "Общая_сумма"]
-            )
+            else:
+                grouped = pd.DataFrame(
+                    columns=["Тип оплаты", "Название", "Количество", "Общая_сумма"]
+                )
 
-        if not grouped.empty:
-            grouped_total = pd.DataFrame(
-                [
+            if not grouped.empty:
+                grouped_total = pd.DataFrame(
                     [
-                        "",
-                        "ИТОГО",
-                        grouped["Количество"].sum(),
-                        grouped["Общая_сумма"].sum(),
-                    ]
-                ],
-                columns=["Тип оплаты", "Название", "Количество", "Общая_сумма"],
-            )
-            grouped = pd.concat([grouped, grouped_total], ignore_index=True)
-
-        grouped.to_excel(writer, sheet_name="Группировка", index=False)
-
-        # (Опционально) отдельный срез по авторам: сумма и кол-во
-        if not orders_df.empty and "Автор" in orders_df:
-            by_author = (
-                orders_df.groupby(["Автор"], dropna=False)
-                .agg(
-                    Количество=("Сумма позиции", "size"),
-                    Общая_сумма=("Сумма позиции", "sum"),
+                        [
+                            "",
+                            "ИТОГО",
+                            grouped["Количество"].sum(),
+                            grouped["Общая_сумма"].sum(),
+                        ]
+                    ],
+                    columns=["Тип оплаты", "Название", "Количество", "Общая_сумма"],
                 )
-                .reset_index()
-                .sort_values(["Общая_сумма"], ascending=False)
-            )
-            by_author.to_excel(writer, sheet_name="По авторам", index=False)
+                grouped = pd.concat([grouped, grouped_total], ignore_index=True)
+
+            grouped.to_excel(writer, sheet_name="Группировка", index=False)
+
+            if not df_prepared.empty and "Автор" in df_prepared:
+                by_author = (
+                    df_prepared.groupby(["Автор"], dropna=False)
+                    .agg(
+                        Количество=("Сумма позиции", "size"),
+                        Общая_сумма=("Сумма позиции", "sum"),
+                    )
+                    .reset_index()
+                    .sort_values(["Общая_сумма"], ascending=False)
+                )
+                by_author.to_excel(writer, sheet_name="По авторам", index=False)
+
+        auto_adjust_columns(path)
+
+    orders_regular = orders_df[orders_df["is_staff"] == 0].copy()
+    orders_staff = orders_df[orders_df["is_staff"] == 1].copy()
+
+    prepared_regular = _prepare_orders_df(orders_regular)
+    prepared_staff = _prepare_orders_df(orders_staff)
+
+    if start_date and end_date:
+        period_str = (
+            start_date.isoformat()
+            if start_date == end_date
+            else f"{start_date.isoformat()}__{end_date.isoformat()}"
+        )
+    else:
+        period_str = "all"
+
+    report_path = f"report_{period_str}.xlsx"
+    staff_report_path = (
+        f"report_staff_{period_str}.xlsx" if not orders_staff.empty else None
+    )
+    log_path = f"log_report_{period_str}.xlsx"
+
+    _write_report(prepared_regular, report_path)
+    if staff_report_path:
+        _write_report(prepared_staff, staff_report_path)
 
     # 7) Лог действий
+    actions_df.columns = [
+        "Дата/время",
+        "Действие",
+        "Тип оплаты",
+        "Название",
+        "user_id",
+        "username",
+        "Сотрудник",
+    ]
+    actions_df["Сотрудник"] = actions_df["Сотрудник"].apply(lambda v: bool(v))
+
     with pd.ExcelWriter(log_path, engine="openpyxl") as writer:
         actions_df.to_excel(writer, sheet_name="Журнал действий", index=False)
 
-    # 8) Автоподбор ширины
-    auto_adjust_columns(report_path)
     auto_adjust_columns(log_path)
 
-    return report_path, log_path
+    return report_path, staff_report_path, log_path

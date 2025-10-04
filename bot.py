@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, GROUP_CHAT_ID
 from db import init_db
 from keyboards import show_main_menu
 from utils import send_and_track
@@ -58,8 +58,36 @@ async def cmd_start(message: Message, state: FSMContext):
     await show_main_menu(message.from_user.id, message.chat.id, bot)
 
 
+async def _log_configured_chats() -> None:
+    raw_ids = (GROUP_CHAT_ID or "").split(",")
+    chat_ids = [cid.strip() for cid in raw_ids if cid.strip()]
+
+    if not chat_ids:
+        logging.warning("GROUP_CHAT_ID is not configured; бот не знает целевые чаты.")
+        return
+
+    for raw_id in chat_ids:
+        chat_id: int | str = raw_id
+        if raw_id.lstrip("-+").isdigit():
+            try:
+                chat_id = int(raw_id)
+            except ValueError:
+                pass
+        try:
+            chat = await bot.get_chat(chat_id)
+            logging.info(
+                "✅ Бот активен в чате '%s' (id=%s, type=%s)",
+                chat.title or chat.id,
+                chat.id,
+                chat.type,
+            )
+        except Exception as exc:
+            logging.warning("⚠️ Не удалось получить чат %s: %s", raw_id, exc)
+
+
 # Точка входа
 async def main():
+    await _log_configured_chats()
     await dp.start_polling(bot)
 
 

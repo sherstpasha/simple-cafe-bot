@@ -87,8 +87,9 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
             f"{it['item_name']}×{it['quantity']}({it['price']}₽)"
             for it in order["items"]
         )
+        staff_suffix = " | Сотрудник" if order.get("is_staff") else ""
         text_lines.append(
-            f"{idx}. {formatted} | {order['payment_type']} | {items_summary} | Итого: {order['total']}₽"
+            f"{idx}. {formatted} | {order['payment_type']}{staff_suffix} | {items_summary} | Итого: {order['total']}₽"
         )
         buttons.append(
             [InlineKeyboardButton(text=str(idx), callback_data=f"del_{order['id']}")]
@@ -134,10 +135,12 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
         pass
 
     total = sum(it.get("row_total", it["price"] * it["quantity"]) for it in items)
+    is_staff_order = any(bool(it.get("is_staff")) for it in items)
 
     lines = []
     for it in items:
-        line = f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽"
+        staff_suffix = " (для сотрудника)" if is_staff_order else ""
+        line = f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽{staff_suffix}"
         try:
             addons = _json.loads(it.get("addons_json") or "[]")
         except Exception:
@@ -145,11 +148,13 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
         for a in addons:
             lines.append(line)
             line = None
-            lines.append(f"   • {a.get('name','')} — {int(a.get('price',0))}₽")
+            addon_price = int(a.get("price", 0))
+            lines.append(f"   • {a.get('name','')} — {addon_price}₽")
         if line is not None:
             lines.append(line)
     summary = "\n".join(lines)
-    user_text = f"❌ Заказ #{order_id} удалён:\n{summary}\n\n💰 Итого: {total}₽"
+    staff_note = "\n(Заказ помечен как для сотрудника)" if is_staff_order else ""
+    user_text = f"❌ Заказ #{order_id} удалён:\n{summary}{staff_note}\n\n💰 Итого: {total}₽"
 
     # отправляем пользователю
     await send_and_track(
@@ -160,19 +165,20 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
     )
 
     # дублируем в группу
-    try:
-        await call.bot.send_message(
-            GROUP_CHAT_ID,
-            f"🗑 <b>Заказ #{order_id} удалён</b> пользователем @{call.from_user.username or call.from_user.id}\n\n"
-            + summary
-            + f"\n\n💰 Итого: {total}₽",
-            parse_mode="HTML",
-        )
-        logger.info(
-            f"Уведомление об удалении заказа #{order_id} отправлено в группу {GROUP_CHAT_ID}"
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить уведомление об удалении в группу: {e}")
+    if not is_staff_order:
+        try:
+            await call.bot.send_message(
+                GROUP_CHAT_ID,
+                f"🗑 <b>Заказ #{order_id} удалён</b> пользователем @{call.from_user.username or call.from_user.id}\n\n"
+                + summary
+                + f"\n\n💰 Итого: {total}₽",
+                parse_mode="HTML",
+            )
+            logger.info(
+                f"Уведомление об удалении заказа #{order_id} отправлено в группу {GROUP_CHAT_ID}"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление об удалении в группу: {e}")
 
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
@@ -218,6 +224,7 @@ async def do_clear_today(call: CallbackQuery, state: FSMContext):
                         item_name=it["item_name"],
                         user_id=call.from_user.id,
                         username=call.from_user.username or "",
+                        is_staff=order.get("is_staff", False),
                     )
 
     await state.clear()
