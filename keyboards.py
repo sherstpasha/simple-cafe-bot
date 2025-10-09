@@ -11,6 +11,7 @@ def confirm_keyboard(
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=confirm_text, callback_data=confirm_cb)],
+            [InlineKeyboardButton(text="👥 Для сотрудника", callback_data="confirm_add_staff")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_cb)],
         ]
     )

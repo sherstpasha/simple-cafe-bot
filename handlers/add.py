@@ -57,9 +57,6 @@ async def handle_message(message: Message, state: FSMContext, bot):
         if not user_text:
             return await notify_temp(message, "⚠️ Пустой запрос.")
 
-        lowered = user_text.lower()
-        heuristic_staff = "сотруднику" in lowered or "для сотрудника" in lowered
-
         logger.info(f"[User Input]: {user_text}")
 
         # === единый вызов в llm_client: промпт лежит там ===
@@ -74,10 +71,9 @@ async def handle_message(message: Message, state: FSMContext, bot):
 
         raw_items = parsed.get("it", [])
         pay_code = parsed.get("pay", -1)
-        is_staff_order = bool(parsed.get("staff", 0)) or heuristic_staff
 
-        # сохраняем исходный текст и флаг для последующих шагов
-        await state.update_data(raw_text=user_text, is_staff=is_staff_order)
+        # сохраняем исходный текст (убираем автоопределение is_staff)
+        await state.update_data(raw_text=user_text)
 
         # сопоставление pay
         if pay_code == 0:
@@ -133,17 +129,14 @@ async def handle_message(message: Message, state: FSMContext, bot):
         )
         lines = []
         for i, it in enumerate(normalized, 1):
-            staff_suffix = " (для сотрудника)" if is_staff_order else ""
-            lines.append(f"{i}) {it['item_name']} — {it['price']}₽{staff_suffix}")
+            lines.append(f"{i}) {it['item_name']} — {it['price']}₽")
             for a in it["addons"]:
                 lines.append(f"   • {a['name']} — {a['price']}₽")
 
         kb = confirm_keyboard("✅ Добавить", "confirm_add", "cancel_add")
         # Формируем текст подтверждения с исходным запросом сверху
         prompt = (
-            f"🔹 Подтвердите заказ (оплата: <b>{pay_text}</b>)\n"
-            + ("👥 Заказ помечен как для сотрудника.\n" if is_staff_order else "")
-            + "\n"
+            f"🔹 Подтвердите заказ (оплата: <b>{pay_text}</b>)\n\n"
             f"Запрос: <i>{user_text}</i>\n\n"
             + "\n".join(lines)
             + f"\n\n💰 Итого: <b>{total}₽</b>"
@@ -160,14 +153,11 @@ async def handle_message(message: Message, state: FSMContext, bot):
         await notify_temp(message, "⚠️ Не удалось обработать заказ.")
 
 
-@router.callback_query(F.data == "confirm_add")
-async def confirm_add(call: CallbackQuery, state: FSMContext):
-    await call.answer()
-
+async def _process_order_confirmation(call: CallbackQuery, state: FSMContext, is_staff_order: bool = False):
+    """Общая функция для обработки подтверждения заказа (обычного или для сотрудника)"""
     data = await state.get_data()
     items = data.get("items", [])
     raw_text = data.get("raw_text", "")
-    is_staff_order = data.get("is_staff", False)
 
     if not items:
         return await notify_temp(call, "⚠️ Нет ни одной позиции.")
@@ -239,6 +229,18 @@ async def confirm_add(call: CallbackQuery, state: FSMContext):
     # очищаем состояние и возвращаем главное меню
     await state.clear()
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+
+
+@router.callback_query(F.data == "confirm_add")
+async def confirm_add(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await _process_order_confirmation(call, state, is_staff_order=False)
+
+
+@router.callback_query(F.data == "confirm_add_staff")
+async def confirm_add_staff(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await _process_order_confirmation(call, state, is_staff_order=True)
 
 
 @router.callback_query(F.data == "cancel_add")
