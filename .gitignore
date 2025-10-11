@@ -30,6 +30,7 @@ ENV/
 env/
 .venv/
 .env/
+.envcopy
 
 # Logs
 *.log

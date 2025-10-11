@@ -36,6 +36,7 @@ def generate_reports(start_date=None, end_date=None):
     orders_df = pd.read_sql_query(
         f"""
         SELECT 
+          o.id            AS order_id,
           o.date          AS date,
           o.username      AS username,
           o.is_staff      AS is_staff,

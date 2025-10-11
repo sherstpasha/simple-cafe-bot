@@ -103,7 +103,6 @@ def _extract_json_obj(text: str) -> dict:
         try:
             print(raw)
         except Exception:
-            # на случай, если там не-utf8
             print(repr(raw))
         print("---- BROKEN JSON END ----")
         raise
@@ -172,7 +171,6 @@ def _build_messages_with_exact_prompt(user_text: str, menu: dict) -> list[dict]:
         '  "pay":0\n'
         "}\n\n"
 
-        # --- ДОБАВЛЕННЫЕ ПРИМЕРЫ ПРО КОРИЦУ ---
         '- Запрос: "капучино с корицей наличка"\n'
         "{\n"
         '  "it":[\n'
@@ -194,7 +192,6 @@ def _build_messages_with_exact_prompt(user_text: str, menu: dict) -> list[dict]:
         "  ],\n"
         '  "pay":0\n'
         "}\n\n"
-        # --- КОНЕЦ ДОБАВЛЕННЫХ ПРИМЕРОВ ---
         "Никакого другого текста — только JSON."
     )
 

@@ -19,7 +19,6 @@ from db import add_order_items
 router = Router()
 logger = logging.getLogger(__name__)
 
-# загружаем меню из JSON
 with open(MENU_FILE, encoding="utf-8") as f:
     MENU = json.load(f)
 MAIN_MENU = MENU["main"]
@@ -34,17 +33,16 @@ async def handle_message(message: Message, state: FSMContext, bot):
     if not await check_membership(bot, user_id):
         return await notify_temp(message, "⛔ Доступ запрещён: вы не участник группы.")
 
+    await state.clear()
+    
     try:
         user_id = message.from_user.id
         chat_id = message.chat.id
 
-        # удаляем оригинал
         try:
             await message.delete()
         except:
             pass
-
-        # получаем текст или распознаём голос
         if message.voice:
             user_text = await transcribe_voice(bot, message)
             if not user_text:
@@ -59,7 +57,6 @@ async def handle_message(message: Message, state: FSMContext, bot):
 
         logger.info(f"[User Input]: {user_text}")
 
-        # === единый вызов в llm_client: промпт лежит там ===
         try:
             parsed = await parse_order_from_text(user_text, MENU, temperature=0.2)
         except LLMParseError:
@@ -72,10 +69,7 @@ async def handle_message(message: Message, state: FSMContext, bot):
         raw_items = parsed.get("it", [])
         pay_code = parsed.get("pay", -1)
 
-        # сохраняем исходный текст (убираем автоопределение is_staff)
         await state.update_data(raw_text=user_text)
-
-        # сопоставление pay
         if pay_code == 0:
             pay_text = "Наличный"
         elif pay_code == 1:
@@ -83,7 +77,6 @@ async def handle_message(message: Message, state: FSMContext, bot):
         else:
             pay_text = "Не указано"
 
-        # нормализация
         normalized = []
         for entry in raw_items:
             name = (entry.get("n") or entry.get("name") or "").strip()
@@ -106,7 +99,6 @@ async def handle_message(message: Message, state: FSMContext, bot):
                 addons_info.append({"name": ad, "price": ADDONS.get(ad, 0)})
 
             price = MAIN_MENU[name]
-            # текущая логика — «размножаем» по количеству (quantity=1 в каждой строке)
             for _ in range(qty):
                 normalized.append(
                     {
@@ -134,7 +126,6 @@ async def handle_message(message: Message, state: FSMContext, bot):
                 lines.append(f"   • {a['name']} — {a['price']}₽")
 
         kb = confirm_keyboard("✅ Добавить", "confirm_add", "cancel_add")
-        # Формируем текст подтверждения с исходным запросом сверху
         prompt = (
             f"🔹 Подтвердите заказ (оплата: <b>{pay_text}</b>)\n\n"
             f"Запрос: <i>{user_text}</i>\n\n"
@@ -158,14 +149,18 @@ async def _process_order_confirmation(call: CallbackQuery, state: FSMContext, is
     data = await state.get_data()
     items = data.get("items", [])
     raw_text = data.get("raw_text", "")
+    
+    if not raw_text:
+        logger.warning(f"Empty raw_text for user {call.from_user.id}")
+        raw_text = "[текст заказа не сохранен]"
 
     if not items:
         return await notify_temp(call, "⚠️ Нет ни одной позиции.")
 
-    # сохраняем заказ вместе с исходным текстом
+    order_id = None
     for _ in range(3):
         try:
-            add_order_items(
+            order_id = add_order_items(
                 items,
                 call.from_user.id,
                 call.from_user.username or "",
@@ -179,13 +174,10 @@ async def _process_order_confirmation(call: CallbackQuery, state: FSMContext, is
                 continue
             return await notify_temp(call, "⚠️ Ошибка базы данных.")
 
-    # удаляем сообщение с кнопками подтверждения
     try:
         await call.message.delete()
     except:
         pass
-
-    # подготавливаем текст подтверждения
     total = sum(it["price"] + sum(a["price"] for a in it["addons"]) for it in items)
     lines = []
     for i, it in enumerate(items, 1):
@@ -195,7 +187,7 @@ async def _process_order_confirmation(call: CallbackQuery, state: FSMContext, is
             lines.append(f"   • {a['name']} — {a['price']}₽")
 
     confirmation = (
-        f"✅ Заказ добавлен (оплата: <b>{items[0]['payment_type']}</b>)\n"
+        f"✅ Заказ #{order_id} добавлен (оплата: <b>{items[0]['payment_type']}</b>)\n"
         + ("👥 Заказ помечен как для сотрудника.\n" if is_staff_order else "")
         + "\n"
         + f"Запрос: <i>{raw_text}</i>\n\n"
@@ -203,30 +195,26 @@ async def _process_order_confirmation(call: CallbackQuery, state: FSMContext, is
         + f"\n\n💰 Итого: <b>{total}₽</b>"
     )
 
-    # 1) отправляем пользователю
     await send_and_track(
         call.bot,
         call.from_user.id,
         call.message.chat.id,
         confirmation,
     )
+    try:
+        staff_prefix = "👥 [ДЛЯ СОТРУДНИКА] " if is_staff_order else ""
+        await call.bot.send_message(
+            GROUP_CHAT_ID,
+            f"📣 <b>{staff_prefix}Новый заказ от @{call.from_user.username or call.from_user.id}</b>\n\n"
+            + confirmation,
+            parse_mode="HTML",
+        )
+        logger.info(f"Уведомление о новом заказе отправлено в группу {GROUP_CHAT_ID}")
+    except Exception as e:
+        logger.error(
+            f"Не удалось отправить уведомление в группу {GROUP_CHAT_ID}: {e}"
+        )
 
-    # 2) дублируем уведомление в группу, если это не заказ для сотрудника
-    if not is_staff_order:
-        try:
-            await call.bot.send_message(
-                GROUP_CHAT_ID,
-                f"📣 <b>Новый заказ от @{call.from_user.username or call.from_user.id}</b>\n\n"
-                + confirmation,
-                parse_mode="HTML",
-            )
-            logger.info(f"Уведомление о новом заказе отправлено в группу {GROUP_CHAT_ID}")
-        except Exception as e:
-            logger.error(
-                f"Не удалось отправить уведомление в группу {GROUP_CHAT_ID}: {e}"
-            )
-
-    # очищаем состояние и возвращаем главное меню
     await state.clear()
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 

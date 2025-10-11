@@ -1,5 +1,3 @@
-# bot.py
-
 import logging
 import asyncio
 
@@ -14,19 +12,14 @@ from config import BOT_TOKEN, GROUP_CHAT_ID
 from db import init_db
 from keyboards import show_main_menu
 from utils import send_and_track
-
-# Роутеры
 from handlers import add, delete, report, misc, menu, chat_events
 
-# Настройка логгирования и базы данных
 logging.basicConfig(level=logging.INFO)
 init_db()
 
-# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-# Подключение роутеров
 dp.include_router(add.router)
 dp.include_router(delete.router)
 dp.include_router(report.router)
@@ -35,13 +28,10 @@ dp.include_router(menu.router)
 dp.include_router(chat_events.router)
 
 
-# Обработка команды /start
 @dp.message(F.chat.type == "private", F.text == "/start")
 async def cmd_start(message: Message, state: FSMContext):
-    # очищаем предыдущее состояние
     await state.clear()
 
-    # 1) Приветственная инструкция
     welcome = (
         "👋 Привет! Я — помощник кассира.\n\n"
         "Как пользоваться:\n"
@@ -53,8 +43,6 @@ async def cmd_start(message: Message, state: FSMContext):
         "Поехали!"
     )
     await send_and_track(bot, message.from_user.id, message.chat.id, welcome)
-
-    # 2) Главная клавиатура
     await show_main_menu(message.from_user.id, message.chat.id, bot)
 
 
@@ -85,7 +73,6 @@ async def _log_configured_chats() -> None:
             logging.warning("⚠️ Не удалось получить чат %s: %s", raw_id, exc)
 
 
-# Точка входа
 async def main():
     await _log_configured_chats()
     await dp.start_polling(bot)

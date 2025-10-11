@@ -1,6 +1,9 @@
 import sqlite3
+import logging
 from datetime import datetime, date
 import json as _json
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = "orders.db"
 
@@ -99,77 +102,6 @@ def log_action(action_type, payment_type, item_name, user_id, username, *, is_st
         conn.close()
 
 
-# def clear_today(user_id, username):
-#     conn = get_connection()
-#     cursor = conn.cursor()
-#     today = date.today().isoformat()
-#     cursor.execute(
-#         "SELECT id, payment_type, item_name FROM orders WHERE date(date)=date(?) AND user_id=?",
-#         (today, user_id),
-#     )
-#     rows = cursor.fetchall()
-#     for r in rows:
-#         cursor.execute("DELETE FROM orders WHERE id=?", (r["id"],))
-#         log_action(
-#             "очистка_сегодня", r["payment_type"], r["item_name"], user_id, username
-#         )
-#     conn.commit()
-#     conn.close()
-
-
-# def get_user_orders(user_id):
-#     conn = get_connection()
-#     cursor = conn.cursor()
-#     cursor.execute(
-#         "SELECT id, date, payment_type, item_name FROM orders WHERE user_id = ? ORDER BY date DESC",
-#         (user_id,),
-#     )
-#     rows = cursor.fetchall()
-#     conn.close()
-#     return [
-#         {"id": r[0], "date": r[1], "payment_type": r[2], "item_name": r[3]}
-#         for r in rows
-#     ]
-
-
-# def delete_order(order_id, user_id):
-#     conn = get_connection()
-#     cursor = conn.cursor()
-#     cursor.execute(
-#         "SELECT payment_type, item_name FROM orders WHERE id = ? AND user_id = ?",
-#         (order_id, user_id),
-#     )
-#     row = cursor.fetchone()
-#     if not row:
-#         conn.close()
-#         return None
-#     cursor.execute(
-#         "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
-#     )
-#     conn.commit()
-#     conn.close()
-#     return {"payment_type": row[0], "item_name": row[1]}
-
-
-# def delete_orders_today(user_id):
-#     from datetime import date
-
-#     conn = get_connection()
-#     cursor = conn.cursor()
-#     today = date.today().isoformat()
-#     cursor.execute(
-#         "SELECT payment_type, item_name FROM orders WHERE user_id = ? AND date(date) = ?",
-#         (user_id, today),
-#     )
-#     rows = cursor.fetchall()
-#     cursor.execute(
-#         "DELETE FROM orders WHERE user_id = ? AND date(date) = ?", (user_id, today)
-#     )
-#     conn.commit()
-#     conn.close()
-#     return len(rows), [{"payment_type": r[0], "item_name": r[1]} for r in rows]
-
-
 def add_order_items(
     items: list[dict],
     user_id: int,
@@ -181,10 +113,15 @@ def add_order_items(
     """
     Записывает в БД сам заказ и сразу все позиции + логи в одном соединении.
     """
+    if raw_text is None:
+        raw_text = ""
+    raw_text = str(raw_text).strip()
+    
     conn = get_connection()
     cursor = conn.cursor()
 
     # 1) создаём новую запись в orders
+    logger.debug(f"Saving order for user {user_id}: raw_text='{raw_text[:50]}...'")
     cursor.execute(
         "INSERT INTO orders (date, user_id, username, raw_text, is_staff) VALUES (?, ?, ?, ?, ?)",
         (datetime.now().isoformat(), user_id, username, raw_text, 1 if is_staff else 0),
@@ -235,6 +172,8 @@ def add_order_items(
     # 3) единственный коммит и закрытие
     conn.commit()
     conn.close()
+    
+    return order_id
 
 
 def get_user_orders_with_items(user_id: int) -> list[dict]:
@@ -257,7 +196,6 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
     """
     conn = get_connection()
     cursor = conn.cursor()
-    # Сначала пробегаемся по уникальным заказам
     cursor.execute(
         """
         SELECT DISTINCT o.id, o.date, o.is_staff, oi.payment_type
@@ -270,7 +208,6 @@ def get_user_orders_with_items(user_id: int) -> list[dict]:
     )
     orders = []
     for oid, date_, is_staff, payment in cursor.fetchall():
-        # Для каждого заказа собираем позиции
         cursor2 = conn.cursor()
         cursor2.execute(
             """

@@ -1,5 +1,3 @@
-# handlers/delete.py
-
 import logging
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -20,9 +18,6 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 ORDERS_PER_PAGE = 5
-
-
-# Показать список заказов
 @router.callback_query(F.message.chat.type == "private", F.data == "delete")
 async def show_orders(call: CallbackQuery, state: FSMContext):
     if not await check_membership(call.bot, call.from_user.id):
@@ -33,7 +28,6 @@ async def show_orders(call: CallbackQuery, state: FSMContext):
     await display_orders(call, state, offset=0)
 
 
-# Кнопка "⏭ Далее"
 @router.callback_query(F.message.chat.type == "private", F.data == "next_page")
 async def next_page(call: CallbackQuery, state: FSMContext):
     if not await check_membership(call.bot, call.from_user.id):
@@ -44,7 +38,6 @@ async def next_page(call: CallbackQuery, state: FSMContext):
     await display_orders(call, state, offset)
 
 
-# Кнопка "🔙 В начало"
 @router.callback_query(F.message.chat.type == "private", F.data == "reset_page")
 async def reset_page(call: CallbackQuery, state: FSMContext):
     if not await check_membership(call.bot, call.from_user.id):
@@ -63,11 +56,7 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
     page = orders[offset : offset + ORDERS_PER_PAGE]
 
     if not page:
-        # Показываем тост, потом просто редактируем текущее сообщение в главное меню,
-        # чтобы не накладывать вторую копию
         await notify_temp(call, "🔸 У вас пока нет заказов.")
-        # Импортируйте get_main_menu в начало модуля:
-        # from keyboards import get_main_menu
         await call.message.edit_text(
             "Напишите заказ и тип оплаты:", reply_markup=get_main_menu()
         )
@@ -75,8 +64,7 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
 
     text_lines = []
     buttons = []
-    for idx, order in enumerate(page, start=1):
-        # форматируем время
+    for order in page:
         try:
             dt = datetime.fromisoformat(order["date"])
             formatted = dt.strftime("%Y-%m-%d %H:%M")
@@ -89,13 +77,12 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
         )
         staff_suffix = " | Сотрудник" if order.get("is_staff") else ""
         text_lines.append(
-            f"{idx}. {formatted} | {order['payment_type']}{staff_suffix} | {items_summary} | Итого: {order['total']}₽"
+            f"#{order['id']}. {formatted} | {order['payment_type']}{staff_suffix} | {items_summary} | Итого: {order['total']}₽"
         )
         buttons.append(
-            [InlineKeyboardButton(text=str(idx), callback_data=f"del_{order['id']}")]
+            [InlineKeyboardButton(text=f"#{order['id']}", callback_data=f"del_{order['id']}")]
         )
 
-    # навигация
     nav = []
     if offset + ORDERS_PER_PAGE < len(orders):
         nav.append(InlineKeyboardButton(text="⏭ Далее", callback_data="next_page"))
@@ -116,7 +103,6 @@ async def display_orders(call: CallbackQuery, state: FSMContext, offset: int):
     )
 
 
-# Удалить один заказ
 @router.callback_query(F.message.chat.type == "private", F.data.startswith("del_"))
 async def delete_one(call: CallbackQuery, state: FSMContext):
     if not await check_membership(call.bot, call.from_user.id):
@@ -141,17 +127,16 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
     for it in items:
         staff_suffix = " (для сотрудника)" if is_staff_order else ""
         line = f"- {it['item_name']} ×{it['quantity']} — {it['price']}₽{staff_suffix}"
+        lines.append(line)
+        
         try:
             addons = _json.loads(it.get("addons_json") or "[]")
         except Exception:
             addons = []
+        
         for a in addons:
-            lines.append(line)
-            line = None
             addon_price = int(a.get("price", 0))
             lines.append(f"   • {a.get('name','')} — {addon_price}₽")
-        if line is not None:
-            lines.append(line)
     summary = "\n".join(lines)
     staff_note = "\n(Заказ помечен как для сотрудника)" if is_staff_order else ""
     user_text = f"❌ Заказ #{order_id} удалён:\n{summary}{staff_note}\n\n💰 Итого: {total}₽"
@@ -164,7 +149,6 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
         text=user_text,
     )
 
-    # дублируем в группу
     if not is_staff_order:
         try:
             await call.bot.send_message(
@@ -183,7 +167,6 @@ async def delete_one(call: CallbackQuery, state: FSMContext):
     await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
 
 
-# Подтверждение очистки за сегодня
 @router.callback_query(F.message.chat.type == "private", F.data == "clear_today")
 async def confirm_clear_today(call: CallbackQuery):
     if not await check_membership(call.bot, call.from_user.id):
@@ -196,7 +179,6 @@ async def confirm_clear_today(call: CallbackQuery):
     )
 
 
-# Удалить за сегодня
 @router.callback_query(F.message.chat.type == "private", F.data == "confirm_clear")
 async def do_clear_today(call: CallbackQuery, state: FSMContext):
     if not await check_membership(call.bot, call.from_user.id):
