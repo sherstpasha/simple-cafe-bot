@@ -117,63 +117,89 @@ def add_order_items(
         raw_text = ""
     raw_text = str(raw_text).strip()
     
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    # 1) создаём новую запись в orders
-    logger.debug(f"Saving order for user {user_id}: raw_text='{raw_text[:50]}...'")
-    cursor.execute(
-        "INSERT INTO orders (date, user_id, username, raw_text, is_staff) VALUES (?, ?, ?, ?, ?)",
-        (datetime.now().isoformat(), user_id, username, raw_text, 1 if is_staff else 0),
-    )
-
-    order_id = cursor.lastrowid
-
-    now = datetime.now().isoformat()
-    # 2) вставляем все позиции + одно лог-сообщение на каждую
-    for item in items:
-        qty = item.get("quantity", 1)
-        base_price = int(item["price"])
-        addons = item.get("addons", [])
-        addons_total = sum(int(a.get("price", 0)) for a in addons)
-        row_total = (base_price + addons_total) * qty
-
-        addons_json = _json.dumps(addons, ensure_ascii=False)
-
-        cursor.execute(
-            "INSERT INTO order_items (order_id, item_name, payment_type, price, quantity, addons_total, addons_json, row_total, is_staff) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                order_id,
-                item["item_name"],
-                item["payment_type"],
-                base_price,
-                qty,
-                addons_total,
-                addons_json,
-                row_total,
-                1 if is_staff else 0,
-            ),
-        )
-        cursor.execute(
-            "INSERT INTO actions_log (timestamp, action_type, payment_type, item_name, user_id, username, is_staff) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                now,
-                "добавление",
-                item["payment_type"],
-                item["item_name"],
-                user_id,
-                username,
-                1 if is_staff else 0,
-            ),
-        )
-
-    # 3) единственный коммит и закрытие
-    conn.commit()
-    conn.close()
+    if not items:
+        logger.warning(f"add_order_items called with empty items list for user {user_id}")
+        raise ValueError("Cannot add order with no items")
     
-    return order_id
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # 1) создаём новую запись в orders
+        logger.debug(f"Saving order for user {user_id}: raw_text='{raw_text[:50]}...', items_count={len(items)}")
+        cursor.execute(
+            "INSERT INTO orders (date, user_id, username, raw_text, is_staff) VALUES (?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(), user_id, username, raw_text, 1 if is_staff else 0),
+        )
+
+        order_id = cursor.lastrowid
+        logger.debug(f"Created order record with ID={order_id}")
+
+        now = datetime.now().isoformat()
+        # 2) вставляем все позиции + одно лог-сообщение на каждую
+        for idx, item in enumerate(items):
+            qty = item.get("quantity", 1)
+            base_price = int(item["price"])
+            addons = item.get("addons", [])
+            addons_total = sum(int(a.get("price", 0)) for a in addons)
+            row_total = (base_price + addons_total) * qty
+
+            addons_json = _json.dumps(addons, ensure_ascii=False)
+
+            cursor.execute(
+                "INSERT INTO order_items (order_id, item_name, payment_type, price, quantity, addons_total, addons_json, row_total, is_staff) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    order_id,
+                    item["item_name"],
+                    item["payment_type"],
+                    base_price,
+                    qty,
+                    addons_total,
+                    addons_json,
+                    row_total,
+                    1 if is_staff else 0,
+                ),
+            )
+            logger.debug(f"Added item {idx + 1}/{len(items)}: {item['item_name']} to order #{order_id}")
+            
+            cursor.execute(
+                "INSERT INTO actions_log (timestamp, action_type, payment_type, item_name, user_id, username, is_staff) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    now,
+                    "добавление",
+                    item["payment_type"],
+                    item["item_name"],
+                    user_id,
+                    username,
+                    1 if is_staff else 0,
+                ),
+            )
+
+        # 3) единственный коммит и закрытие
+        conn.commit()
+        logger.info(f"Order #{order_id} committed successfully for user {user_id} with {len(items)} items")
+        
+        return order_id
+    
+    except Exception as e:
+        logger.error(f"Error in add_order_items for user {user_id}: {e}")
+        if conn:
+            try:
+                conn.rollback()
+                logger.debug(f"Transaction rolled back for user {user_id}")
+            except Exception as rollback_err:
+                logger.error(f"Failed to rollback transaction: {rollback_err}")
+        raise
+    finally:
+        if conn:
+            try:
+                conn.close()
+                logger.debug(f"Database connection closed for user {user_id}")
+            except Exception as close_err:
+                logger.error(f"Failed to close database connection: {close_err}")
 
 
 def get_user_orders_with_items(user_id: int) -> list[dict]:

@@ -124,10 +124,16 @@ async def send_and_track(
 ) -> Message:
     """
     Отправляет сообщение и обновляет словарь user_last_bot_message.
+    Бросает исключение, если отправка не удалась.
     """
-    msg = await bot.send_message(chat_id, text, **kwargs)
-    user_last_bot_message[user_id] = msg.message_id
-    return msg
+    try:
+        msg = await bot.send_message(chat_id, text, **kwargs)
+        user_last_bot_message[user_id] = msg.message_id
+        logger.debug(f"Message sent and tracked for user {user_id}, msg_id={msg.message_id}")
+        return msg
+    except Exception as e:
+        logger.error(f"Failed to send_and_track message to user {user_id} in chat {chat_id}: {e}")
+        raise
 
 
 async def notify_temp(target: Message | CallbackQuery, text: str, delay: int = 4):

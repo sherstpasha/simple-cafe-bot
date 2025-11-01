@@ -146,77 +146,130 @@ async def handle_message(message: Message, state: FSMContext, bot):
 
 async def _process_order_confirmation(call: CallbackQuery, state: FSMContext, is_staff_order: bool = False):
     """Общая функция для обработки подтверждения заказа (обычного или для сотрудника)"""
-    data = await state.get_data()
-    items = data.get("items", [])
-    raw_text = data.get("raw_text", "")
-    
-    if not raw_text:
-        logger.warning(f"Empty raw_text for user {call.from_user.id}")
-        raw_text = "[текст заказа не сохранен]"
+    try:
+        data = await state.get_data()
+        items = data.get("items", [])
+        raw_text = data.get("raw_text", "")
+        
+        if not raw_text:
+            logger.warning(f"Empty raw_text for user {call.from_user.id}")
+            raw_text = "[текст заказа не сохранен]"
 
-    if not items:
-        return await notify_temp(call, "⚠️ Нет ни одной позиции.")
+        if not items:
+            logger.warning(f"User {call.from_user.id} tried to confirm order with no items")
+            return await notify_temp(call, "⚠️ Нет ни одной позиции.")
 
-    order_id = None
-    for _ in range(3):
+        # Попытка сохранить заказ в БД с повторами
+        order_id = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                order_id = add_order_items(
+                    items,
+                    call.from_user.id,
+                    call.from_user.username or "",
+                    raw_text,
+                    is_staff=is_staff_order,
+                )
+                logger.info(f"Order #{order_id} saved successfully for user {call.from_user.id} (attempt {attempt + 1})")
+                break
+            except sqlite3.OperationalError as err:
+                last_error = err
+                if "locked" in str(err).lower():
+                    logger.warning(f"Database locked, attempt {attempt + 1}/3 for user {call.from_user.id}")
+                    await asyncio.sleep(0.5)
+                    continue
+                logger.error(f"Database error while saving order for user {call.from_user.id}: {err}")
+                return await notify_temp(call, "⚠️ Ошибка базы данных. Попробуйте позже.")
+            except Exception as err:
+                last_error = err
+                logger.exception(f"Unexpected error while saving order for user {call.from_user.id}")
+                return await notify_temp(call, "⚠️ Не удалось сохранить заказ. Попробуйте позже.")
+
+        # Проверяем, что заказ действительно сохранился
+        if order_id is None:
+            logger.error(f"Failed to save order for user {call.from_user.id} after 3 attempts. Last error: {last_error}")
+            return await notify_temp(call, "⚠️ Не удалось сохранить заказ после нескольких попыток. Попробуйте позже.")
+
+        # Удаляем предыдущее сообщение
         try:
-            order_id = add_order_items(
-                items,
+            await call.message.delete()
+        except Exception as e:
+            logger.warning(f"Could not delete message for user {call.from_user.id}: {e}")
+
+        # Формируем текст подтверждения
+        total = sum(it["price"] + sum(a["price"] for a in it["addons"]) for it in items)
+        lines = []
+        for i, it in enumerate(items, 1):
+            staff_suffix = " (для сотрудника)" if is_staff_order else ""
+            lines.append(f"{i}) {it['item_name']} — {it['price']}₽{staff_suffix}")
+            for a in it["addons"]:
+                lines.append(f"   • {a['name']} — {a['price']}₽")
+
+        confirmation = (
+            f"✅ Заказ #{order_id} добавлен (оплата: <b>{items[0]['payment_type']}</b>)\n"
+            + ("👥 Заказ помечен как для сотрудника.\n" if is_staff_order else "")
+            + "\n"
+            + f"Запрос: <i>{raw_text}</i>\n\n"
+            + "\n".join(lines)
+            + f"\n\n💰 Итого: <b>{total}₽</b>"
+        )
+
+        # Отправляем подтверждение пользователю
+        try:
+            await send_and_track(
+                call.bot,
                 call.from_user.id,
-                call.from_user.username or "",
-                raw_text,
-                is_staff=is_staff_order,
+                call.message.chat.id,
+                confirmation,
             )
-            break
-        except sqlite3.OperationalError as err:
-            if "locked" in str(err).lower():
-                await asyncio.sleep(0.5)
-                continue
-            return await notify_temp(call, "⚠️ Ошибка базы данных.")
+            logger.info(f"Confirmation message sent to user {call.from_user.id} for order #{order_id}")
+        except Exception as e:
+            logger.error(f"Failed to send confirmation to user {call.from_user.id} for order #{order_id}: {e}")
+            # Пытаемся отправить хотя бы простое уведомление
+            try:
+                await call.bot.send_message(
+                    call.message.chat.id,
+                    f"✅ Заказ #{order_id} сохранён (но возникла ошибка при отображении деталей)",
+                    parse_mode="HTML",
+                )
+            except Exception as e2:
+                logger.error(f"Failed to send fallback message to user {call.from_user.id}: {e2}")
+                # Уведомление в группу всё равно попытаемся отправить
 
-    try:
-        await call.message.delete()
-    except:
-        pass
-    total = sum(it["price"] + sum(a["price"] for a in it["addons"]) for it in items)
-    lines = []
-    for i, it in enumerate(items, 1):
-        staff_suffix = " (для сотрудника)" if is_staff_order else ""
-        lines.append(f"{i}) {it['item_name']} — {it['price']}₽{staff_suffix}")
-        for a in it["addons"]:
-            lines.append(f"   • {a['name']} — {a['price']}₽")
+        # Отправляем уведомление в группу
+        if not GROUP_CHAT_ID:
+            logger.warning(f"GROUP_CHAT_ID is not configured - skipping group notification for order #{order_id}")
+        else:
+            try:
+                staff_prefix = "👥 [ДЛЯ СОТРУДНИКА] " if is_staff_order else ""
+                await call.bot.send_message(
+                    GROUP_CHAT_ID,
+                    f"📣 <b>{staff_prefix}Новый заказ от @{call.from_user.username or call.from_user.id}</b>\n\n"
+                    + confirmation,
+                    parse_mode="HTML",
+                )
+                logger.info(f"Notification sent to group {GROUP_CHAT_ID} for order #{order_id}")
+            except Exception as e:
+                logger.error(f"Failed to send notification to group {GROUP_CHAT_ID} for order #{order_id}: {e}")
 
-    confirmation = (
-        f"✅ Заказ #{order_id} добавлен (оплата: <b>{items[0]['payment_type']}</b>)\n"
-        + ("👥 Заказ помечен как для сотрудника.\n" if is_staff_order else "")
-        + "\n"
-        + f"Запрос: <i>{raw_text}</i>\n\n"
-        + "\n".join(lines)
-        + f"\n\n💰 Итого: <b>{total}₽</b>"
-    )
+        # Очищаем состояние и показываем главное меню
+        await state.clear()
+        try:
+            await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+        except Exception as e:
+            logger.error(f"Failed to show main menu to user {call.from_user.id}: {e}")
 
-    await send_and_track(
-        call.bot,
-        call.from_user.id,
-        call.message.chat.id,
-        confirmation,
-    )
-    try:
-        staff_prefix = "👥 [ДЛЯ СОТРУДНИКА] " if is_staff_order else ""
-        await call.bot.send_message(
-            GROUP_CHAT_ID,
-            f"📣 <b>{staff_prefix}Новый заказ от @{call.from_user.username or call.from_user.id}</b>\n\n"
-            + confirmation,
-            parse_mode="HTML",
-        )
-        logger.info(f"Уведомление о новом заказе отправлено в группу {GROUP_CHAT_ID}")
     except Exception as e:
-        logger.error(
-            f"Не удалось отправить уведомление в группу {GROUP_CHAT_ID}: {e}"
-        )
-
-    await state.clear()
-    await show_main_menu(call.from_user.id, call.message.chat.id, call.bot)
+        logger.exception(f"Critical error in _process_order_confirmation for user {call.from_user.id}")
+        try:
+            await notify_temp(call, "⚠️ Произошла критическая ошибка. Пожалуйста, попробуйте снова.")
+        except:
+            pass
+        try:
+            await state.clear()
+        except:
+            pass
 
 
 @router.callback_query(F.data == "confirm_add")
